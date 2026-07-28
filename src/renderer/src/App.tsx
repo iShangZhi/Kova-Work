@@ -464,7 +464,7 @@ export function App(): React.JSX.Element {
           <main className="page-main">
             <PageHeader title="今日" description="你的开发任务、Agent 运行状态和待处理事项。" />
             <section className={`attention-panel ${attentionSessions.length === 0 ? 'clear' : ''}`}>
-              <div className=”attention-title”>
+              <div className="attention-title">
                 <span>⚠</span>
                 <div>
                   <h2>等待你处理</h2>
@@ -472,8 +472,8 @@ export function App(): React.JSX.Element {
                 </div>
               </div>
               {attentionSessions[0] && (
-                <button type=”button” onClick={() => void selectSession(attentionSessions[0].id)}>
-                  查看”{attentionSessions[0].title}” →
+                <button type="button" onClick={() => void selectSession(attentionSessions[0].id)}>
+                  查看“{attentionSessions[0].title}” →
                 </button>
               )}
             </section>
