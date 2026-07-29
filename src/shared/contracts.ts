@@ -162,14 +162,18 @@ export interface SkillDefinition {
   updatedAt: string
 }
 
+export type ModelProviderId = 'openai-compatible'
+
 export interface ModelProfile {
   id: string
   name: string
+  provider: ModelProviderId
   baseUrl: string
   model: string
   apiKey?: string
   systemPrompt?: string
   temperature?: number
+  requestTimeoutMs?: number
   enabled: boolean
   createdAt: string
   updatedAt: string
@@ -177,11 +181,13 @@ export interface ModelProfile {
 
 export interface SaveModelProfileInput {
   name: string
+  provider?: ModelProviderId
   baseUrl: string
   model: string
   apiKey?: string
   systemPrompt?: string
   temperature?: number
+  requestTimeoutMs?: number
 }
 
 export interface ModelChatInput {
@@ -235,10 +241,17 @@ export interface Workspace {
   id: string
   name: string
   path: string
+  sourceFolders?: string[]
   defaultModelProfileId?: string
   enabledPluginIds: string[]
   createdAt: string
   updatedAt: string
+}
+
+export interface CreateWorkspaceInput {
+  name: string
+  sourceFolders: string[]
+  defaultModelProfileId?: string
 }
 
 export interface Task {
@@ -331,6 +344,11 @@ export interface StartTaskInput {
   permissionMode: PermissionMode
 }
 
+export interface ContinueTaskInput {
+  taskId: string
+  prompt: string
+}
+
 export interface TaskWithDetails {
   task: Task
   workspace?: Workspace
@@ -401,10 +419,14 @@ export interface KovaApi {
   chatWithModel(input: ModelChatInput): Promise<string>
   listCapabilities(): Promise<RegisteredCapability[]>
   listWorkspaces(): Promise<Workspace[]>
+  createWorkspace(input: CreateWorkspaceInput): Promise<Workspace>
   listTasks(): Promise<Task[]>
   getTask(taskId: string): Promise<TaskWithDetails | null>
   startTask(input: StartTaskInput): Promise<Task>
+  continueTask(input: ContinueTaskInput): Promise<Task>
+  retryTask(taskId: string): Promise<Task>
   cancelTask(taskId: string): Promise<void>
+  deleteTask(taskId: string): Promise<void>
   onTaskEvent(callback: (event: TaskEvent) => void): () => void
   revealPath(path: string): Promise<void>
   listWorkflowProfiles(): Promise<ClaudeWorkflowProfile[]>

@@ -1,8 +1,9 @@
 import { app } from 'electron'
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, realpath, rename, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
-import type { AgentEvent, AgentSession, Artifact, ClaudeWorkflowProfile, McpServerDefinition, ModelProfile, SaveClaudeWorkflowProfileInput, SaveMcpServerInput, SaveModelProfileInput, SessionWithEvents, SkillDefinition, Task, TaskEvent, TaskRun, TaskWithDetails, UpdateMcpServerInput, Workspace } from '../shared/contracts'
+import type { AgentEvent, AgentSession, Artifact, ClaudeWorkflowProfile, CreateWorkspaceInput, McpServerDefinition, ModelProfile, SaveClaudeWorkflowProfileInput, SaveMcpServerInput, SaveModelProfileInput, SessionWithEvents, SkillDefinition, Task, TaskEvent, TaskRun, TaskWithDetails, UpdateMcpServerInput, Workspace } from '../shared/contracts'
+import { CORE_TOOLS_PLUGIN_ID } from './tools/native-tool-registry'
 
 interface PersistedState {
   sessions: AgentSession[]
@@ -44,6 +45,10 @@ export class SessionStore {
     return join(app.getPath('userData'), 'kova-state.json')
   }
 
+  private get backupFilePath(): string {
+    return `${this.filePath}.backup`
+  }
+
   private get legacyFilePath(): string {
     return join(app.getPath('appData'), 'wise-agent', 'wise-agent-state.json')
   }
@@ -55,13 +60,11 @@ export class SessionStore {
   }
 
   private async performLoad(): Promise<void> {
-    try {
-      this.state = JSON.parse(await readFile(this.filePath, 'utf8')) as PersistedState
-    } catch {
-      this.state = emptyState()
-    }
+    const primary = await this.readPersistedState(this.filePath)
+    const backup = primary ? null : await this.readPersistedState(this.backupFilePath)
+    this.state = primary ?? backup ?? emptyState()
 
-    let stateChanged = false
+    let stateChanged = !primary && Boolean(backup)
     if (!this.state.legacyImported) {
       try {
         const legacy = JSON.parse(await readFile(this.legacyFilePath, 'utf8')) as PersistedState
@@ -80,13 +83,36 @@ export class SessionStore {
     this.state.mcpServers ??= []
     this.state.skills ??= []
     this.state.modelProfiles ??= []
+    for (const profile of this.state.modelProfiles) {
+      profile.provider ??= 'openai-compatible'
+    }
     this.state.workflowProfiles ??= []
     this.state.workspaces ??= []
+    for (const workspace of this.state.workspaces) {
+      workspace.sourceFolders ??= [workspace.path]
+    }
     this.state.tasks ??= []
     this.state.taskRuns ??= []
     this.state.taskEvents ??= []
     this.state.artifacts ??= []
     if (stateChanged) await this.flush()
+  }
+
+  private async readPersistedState(path: string): Promise<PersistedState | null> {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        const parsed = JSON.parse(await readFile(path, 'utf8')) as Partial<PersistedState>
+        if (!Array.isArray(parsed.sessions) || !Array.isArray(parsed.events)) {
+          throw new Error('状态文件缺少基础数据结构')
+        }
+        return parsed as PersistedState
+      } catch {
+        if (attempt < 2) {
+          await new Promise((resolve) => setTimeout(resolve, 40 * (attempt + 1)))
+        }
+      }
+    }
+    return null
   }
 
   async listSessions(): Promise<AgentSession[]> {
@@ -232,8 +258,16 @@ export class SessionStore {
   async saveModelProfile(input: SaveModelProfileInput): Promise<ModelProfile> {
     await this.load()
     if (!input.name.trim() || !input.baseUrl.trim() || !input.model.trim()) throw new Error('模型名称、接口地址和模型 ID 均为必填项')
+    if (
+      input.requestTimeoutMs != null &&
+      (!Number.isFinite(input.requestTimeoutMs) ||
+        input.requestTimeoutMs < 1_000 ||
+        input.requestTimeoutMs > 30 * 60_000)
+    ) {
+      throw new Error('模型请求超时必须在 1 秒到 30 分钟之间')
+    }
     const now = new Date().toISOString()
-    const profile: ModelProfile = { id: randomUUID(), name: input.name.trim(), baseUrl: input.baseUrl.trim().replace(/\/$/, ''), model: input.model.trim(), apiKey: input.apiKey?.trim() || undefined, systemPrompt: input.systemPrompt?.trim() || undefined, temperature: input.temperature, enabled: true, createdAt: now, updatedAt: now }
+    const profile: ModelProfile = { id: randomUUID(), name: input.name.trim(), provider: input.provider ?? 'openai-compatible', baseUrl: input.baseUrl.trim().replace(/\/$/, ''), model: input.model.trim(), apiKey: input.apiKey?.trim() || undefined, systemPrompt: input.systemPrompt?.trim() || undefined, temperature: input.temperature, requestTimeoutMs: input.requestTimeoutMs, enabled: true, createdAt: now, updatedAt: now }
     this.state.modelProfiles ??= []
     this.state.modelProfiles.push(profile)
     await this.flush()
@@ -326,12 +360,56 @@ export class SessionStore {
     return [...(this.state.workspaces ?? [])].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
   }
 
+  async createWorkspace(input: CreateWorkspaceInput): Promise<Workspace> {
+    await this.load()
+    const name = input.name.trim()
+    if (!name) throw new Error('项目名称不能为空')
+
+    const requestedFolders = [...new Set(input.sourceFolders.map((path) => path.trim()).filter(Boolean))]
+    if (requestedFolders.length === 0) throw new Error('请至少添加一个源码目录')
+
+    const sourceFolders: string[] = []
+    for (const folder of requestedFolders) {
+      const resolved = await realpath(folder)
+      if (!(await stat(resolved)).isDirectory()) throw new Error(`不是有效目录：${folder}`)
+      if (!sourceFolders.includes(resolved)) sourceFolders.push(resolved)
+    }
+
+    const existingPath = (this.state.workspaces ?? []).find((workspace) => workspace.path === sourceFolders[0])
+    if (existingPath) throw new Error('该源码目录已经属于现有项目')
+    const duplicateName = (this.state.workspaces ?? []).some(
+      (workspace) => workspace.name.localeCompare(name, undefined, { sensitivity: 'accent' }) === 0
+    )
+    if (duplicateName) throw new Error('已存在同名项目')
+
+    const now = new Date().toISOString()
+    const workspace: Workspace = {
+      id: randomUUID(),
+      name,
+      path: sourceFolders[0],
+      sourceFolders,
+      defaultModelProfileId: input.defaultModelProfileId,
+      enabledPluginIds: [CORE_TOOLS_PLUGIN_ID, 'com.kova.claude-code'],
+      createdAt: now,
+      updatedAt: now
+    }
+    this.state.workspaces ??= []
+    this.state.workspaces.push(workspace)
+    await this.flush()
+    return workspace
+  }
+
   async ensureWorkspace(path: string, defaultModelProfileId?: string): Promise<Workspace> {
     await this.load()
     const normalized = path.trim()
     if (!normalized) throw new Error('工作区路径不能为空')
     const existing = (this.state.workspaces ?? []).find((workspace) => workspace.path === normalized)
     if (existing) {
+      if (!existing.enabledPluginIds.includes(CORE_TOOLS_PLUGIN_ID)) {
+        existing.enabledPluginIds.push(CORE_TOOLS_PLUGIN_ID)
+        existing.updatedAt = new Date().toISOString()
+        await this.flush()
+      }
       if (defaultModelProfileId && existing.defaultModelProfileId !== defaultModelProfileId) {
         existing.defaultModelProfileId = defaultModelProfileId
         existing.updatedAt = new Date().toISOString()
@@ -345,8 +423,9 @@ export class SessionStore {
       id: randomUUID(),
       name: basename(normalized),
       path: normalized,
+      sourceFolders: [normalized],
       defaultModelProfileId,
-      enabledPluginIds: ['com.kova.claude-code'],
+      enabledPluginIds: [CORE_TOOLS_PLUGIN_ID, 'com.kova.claude-code'],
       createdAt: now,
       updatedAt: now
     }
@@ -385,6 +464,15 @@ export class SessionStore {
     await this.flush()
   }
 
+  async deleteTask(taskId: string): Promise<void> {
+    await this.load()
+    this.state.tasks = (this.state.tasks ?? []).filter((task) => task.id !== taskId)
+    this.state.taskRuns = (this.state.taskRuns ?? []).filter((run) => run.taskId !== taskId)
+    this.state.taskEvents = (this.state.taskEvents ?? []).filter((event) => event.taskId !== taskId)
+    this.state.artifacts = (this.state.artifacts ?? []).filter((artifact) => artifact.taskId !== taskId)
+    await this.flush()
+  }
+
   async saveTaskRun(run: TaskRun): Promise<void> {
     await this.load()
     this.state.taskRuns ??= []
@@ -414,7 +502,18 @@ export class SessionStore {
     this.writeQueue = this.writeQueue.then(async () => {
       await mkdir(dirname(this.filePath), { recursive: true })
       const temporaryPath = `${this.filePath}.tmp`
-      await writeFile(temporaryPath, JSON.stringify(this.state, null, 2), 'utf8')
+      const serialized = JSON.stringify(this.state, null, 2)
+      try {
+        const current = await readFile(this.filePath, 'utf8')
+        const parsed = JSON.parse(current) as Partial<PersistedState>
+        if (!Array.isArray(parsed.sessions) || !Array.isArray(parsed.events)) {
+          throw new Error('当前状态文件无效')
+        }
+        await writeFile(this.backupFilePath, current, 'utf8')
+      } catch {
+        // Keep the last valid backup when the primary file is missing or corrupt.
+      }
+      await writeFile(temporaryPath, serialized, 'utf8')
       await rename(temporaryPath, this.filePath)
     })
     await this.writeQueue

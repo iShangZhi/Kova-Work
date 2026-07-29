@@ -1,36 +1,44 @@
 import { useEffect, useMemo, useState } from 'react'
+import {
+  ChevronRight,
+  CirclePlus,
+  Folder,
+  FolderPlus,
+  Settings,
+  SquarePen,
+  Trash2,
+  X
+} from 'lucide-react'
 import type {
   AgentDefinition,
-  AgentEvent,
-  AgentId,
-  AgentSession,
   ModelProfile,
-  ClaudeWorkflowProfile,
   PermissionMode,
   PluginDefinition,
   PluginStatus,
+  RegisteredCapability,
   Task,
   TaskEvent,
+  TaskStatus,
   TaskWithDetails,
-  WorkflowStage,
-  SessionWithEvents
+  Workspace
 } from '../../shared/contracts'
-import kovaIcon from '../../../resources/kova-icon.svg'
+import packageInfo from '../../../package.json'
 
 type ViewId = 'today' | 'projects' | 'tasks' | 'agents' | 'plugins' | 'settings'
 type ThemeMode = 'dark' | 'light'
-type AccentId = 'violet' | 'blue' | 'green' | 'orange' | 'rose'
 type TaskFilter = 'all' | 'running' | 'completed' | 'failed'
+type ActivityStatus = TaskStatus
 
-const eventLabels: Record<AgentEvent['type'], string> = {
-  user_message: '你',
-  agent_message: 'Agent',
-  progress: '进度',
-  tool: '工具',
-  permission: '权限',
-  system: '系统',
-  error: '错误',
-  completed: '完成'
+interface ActivityItem {
+  key: string
+  id: string
+  kind: 'task'
+  title: string
+  workspacePath: string
+  workspaceLabel: string
+  source: string
+  status: ActivityStatus
+  updatedAt: string
 }
 
 const taskEventLabels: Record<TaskEvent['type'], string> = {
@@ -48,14 +56,6 @@ const taskEventLabels: Record<TaskEvent['type'], string> = {
   completed: '完成'
 }
 
-const accents: Array<{ id: AccentId; name: string; color: string }> = [
-  { id: 'violet', name: '星云紫', color: '#7167ff' },
-  { id: 'blue', name: '深海蓝', color: '#3984ff' },
-  { id: 'green', name: '松石绿', color: '#25a97f' },
-  { id: 'orange', name: '日落橙', color: '#e67836' },
-  { id: 'rose', name: '珊瑚红', color: '#df5d7d' }
-]
-
 const pluginStatusLabels: Record<PluginStatus, string> = {
   ready: '运行就绪',
   detected: '运行待接入',
@@ -72,10 +72,13 @@ function formatTime(value: string): string {
   }).format(new Date(value))
 }
 
-function statusLabel(status: AgentSession['status']): string {
+function statusLabel(status: ActivityStatus): string {
   return {
+    draft: '草稿',
+    queued: '排队中',
     idle: '空闲',
     running: '运行中',
+    waiting: '等待中',
     completed: '已完成',
     failed: '失败',
     cancelled: '已终止'
@@ -87,61 +90,81 @@ function workspaceName(path: string): string {
 }
 
 export function App(): React.JSX.Element {
-  const [view, setView] = useState<ViewId>('today')
+  const [view, setView] = useState<ViewId>('agents')
   const [agents, setAgents] = useState<AgentDefinition[]>([])
   const [plugins, setPlugins] = useState<PluginDefinition[]>([])
   const [pluginsScannedAt, setPluginsScannedAt] = useState('')
   const [scanningPlugins, setScanningPlugins] = useState(false)
   const [modelProfiles, setModelProfiles] = useState<ModelProfile[]>([])
-  const [workflowProfiles, setWorkflowProfiles] = useState<ClaudeWorkflowProfile[]>([])
-  const [sessions, setSessions] = useState<AgentSession[]>([])
-  const [active, setActive] = useState<SessionWithEvents | null>(null)
   const [tasks, setTasks] = useState<Task[]>([])
   const [activeTask, setActiveTask] = useState<TaskWithDetails | null>(null)
+  const [workspaces, setWorkspaces] = useState<Workspace[]>([])
+  const [capabilities, setCapabilities] = useState<RegisteredCapability[]>([])
   const [workspace, setWorkspace] = useState('')
-  const [agentId, setAgentId] = useState<AgentId>('claude')
-  const [permissionMode, setPermissionMode] = useState<PermissionMode>('plan')
-  const [workflowStage, setWorkflowStage] = useState<WorkflowStage>('development')
-  const [claudeAgent, setClaudeAgent] = useState('claude')
-  const [workflowProfileId, setWorkflowProfileId] = useState('')
+  const [permissionMode, setPermissionMode] = useState<PermissionMode>('acceptEdits')
   const [modelProfileId, setModelProfileId] = useState('')
   const [prompt, setPrompt] = useState('')
-  const [showInspector, setShowInspector] = useState(false)
   const [error, setError] = useState('')
   const [taskFilter, setTaskFilter] = useState<TaskFilter>('all')
   const [expandedPluginId, setExpandedPluginId] = useState<string | null>(null)
+  const [projectsExpanded, setProjectsExpanded] = useState(true)
+  const [expandedProjectPaths, setExpandedProjectPaths] = useState<string[]>([])
+  const [recentExpanded, setRecentExpanded] = useState(true)
+  const [showCreateProject, setShowCreateProject] = useState(false)
+  const [projectName, setProjectName] = useState('')
+  const [projectSourceFolders, setProjectSourceFolders] = useState<string[]>([])
+  const [projectError, setProjectError] = useState('')
+  const [creatingProject, setCreatingProject] = useState(false)
   const [themeMode, setThemeMode] = useState<ThemeMode>(
     () => (localStorage.getItem('kova-theme') as ThemeMode | null) ?? 'light'
   )
-  const [accent, setAccent] = useState<AccentId>(
-    () => (localStorage.getItem('kova-accent') as AccentId | null) ?? 'violet'
-  )
 
-  const selectedAgent = useMemo(
-    () => agents.find((agent) => agent.id === agentId),
-    [agents, agentId]
-  )
+  const activityItems = useMemo<ActivityItem[]>(() => {
+    const workspaceById = new Map(workspaces.map((item) => [item.id, item]))
+    const modelById = new Map(modelProfiles.map((item) => [item.id, item]))
+    return tasks.map((task) => {
+      const taskWorkspace = task.workspaceId ? workspaceById.get(task.workspaceId) : undefined
+      const taskModel = modelById.get(task.modelProfileId)
+      return {
+        key: `task:${task.id}`,
+        id: task.id,
+        kind: 'task' as const,
+        title: task.title,
+        workspacePath: taskWorkspace?.path ?? '',
+        workspaceLabel: taskWorkspace?.name ?? '未关联目录',
+        source: taskModel?.name ?? 'AI 编排',
+        status: task.status,
+        updatedAt: task.updatedAt
+      }
+    }).sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
+  }, [tasks, workspaces, modelProfiles])
 
   const projects = useMemo(() => {
-    const grouped = new Map<string, AgentSession[]>()
-    sessions.filter((session) => session.agentId !== 'model').forEach((session) => {
-      const current = grouped.get(session.workspace) ?? []
-      current.push(session)
-      grouped.set(session.workspace, current)
+    const grouped = new Map<string, { name: string; items: ActivityItem[] }>(
+      workspaces.map((item) => [item.path, { name: item.name, items: [] }])
+    )
+    activityItems.filter((item) => item.workspacePath).forEach((item) => {
+      const current = grouped.get(item.workspacePath) ?? {
+        name: item.workspaceLabel,
+        items: []
+      }
+      current.items.push(item)
+      grouped.set(item.workspacePath, current)
     })
-    return [...grouped.entries()].map(([path, projectSessions]) => ({
+    return [...grouped.entries()].map(([path, project]) => ({
       path,
-      name: workspaceName(path),
-      sessions: projectSessions
+      name: project.name || workspaceName(path),
+      items: project.items
     }))
-  }, [sessions])
+  }, [activityItems, workspaces])
 
-  const runningCount = sessions.filter((session) => session.status === 'running').length
-  const completedCount = sessions.filter((session) => session.status === 'completed').length
-  const attentionCount = sessions.filter((session) => session.status === 'failed').length
-  const attentionSessions = sessions.filter((session) => session.status === 'failed')
-  const filteredSessions =
-    taskFilter === 'all' ? sessions : sessions.filter((session) => session.status === taskFilter)
+  const runningCount = activityItems.filter((item) => item.status === 'running').length
+  const completedCount = activityItems.filter((item) => item.status === 'completed').length
+  const attentionItems = activityItems.filter((item) => item.status === 'failed')
+  const attentionCount = attentionItems.length
+  const filteredActivities =
+    taskFilter === 'all' ? activityItems : activityItems.filter((item) => item.status === taskFilter)
+  const nativeCapabilities = capabilities.filter((item) => item.pluginId === 'com.kova.core-tools')
 
   useEffect(() => {
     document.documentElement.dataset.theme = themeMode
@@ -149,46 +172,31 @@ export function App(): React.JSX.Element {
   }, [themeMode])
 
   useEffect(() => {
-    document.documentElement.dataset.accent = accent
-    localStorage.setItem('kova-accent', accent)
-  }, [accent])
-
-  useEffect(() => {
-    void Promise.all([window.kova.listAgents(), window.kova.listSessions(), window.kova.listPlugins(), window.kova.listModelProfiles(), window.kova.listWorkflowProfiles(), window.kova.listTasks()]).then(
-      ([agentItems, sessionItems, pluginResult, modelItems, workflowItems, taskItems]) => {
+    void Promise.all([
+      window.kova.listAgents(),
+      window.kova.listPlugins(),
+      window.kova.listModelProfiles(),
+      window.kova.listTasks(),
+      window.kova.listWorkspaces(),
+      window.kova.listCapabilities()
+    ]).then(
+      ([agentItems, pluginResult, modelItems, taskItems, workspaceItems, capabilityItems]) => {
         setAgents(agentItems)
-        setSessions(sessionItems)
         setPlugins(pluginResult.plugins)
         setPluginsScannedAt(pluginResult.scannedAt)
         setModelProfiles(modelItems)
-        setWorkflowProfiles(workflowItems)
         setTasks(taskItems)
-        setWorkflowProfileId(workflowItems.find((item) => item.stage === 'development')?.id ?? '')
-        setModelProfileId(modelItems[0]?.id ?? '')
-        const preferred = agentItems.find((agent) => agent.id === 'claude' && agent.available)
-        if (preferred) setAgentId(preferred.id)
+        setWorkspaces(workspaceItems)
+        setCapabilities(capabilityItems)
+        const projectDefault = workspaceItems.find((item) => item.path === workspace)?.defaultModelProfileId
+        setModelProfileId(
+          projectDefault && modelItems.some((item) => item.id === projectDefault)
+            ? projectDefault
+            : modelItems[0]?.id ?? ''
+        )
       }
     ).catch((cause) => setError(`初始化失败：${cause instanceof Error ? cause.message : String(cause)}`))
 
-    const unsubscribeAgent = window.kova.onAgentEvent((event) => {
-      setActive((current) =>
-        current?.session.id === event.sessionId
-          ? {
-              session: {
-                ...current.session,
-                status:
-                  event.type === 'completed'
-                    ? 'completed'
-                    : event.type === 'error'
-                      ? 'failed'
-                      : current.session.status
-              },
-              events: current.events.some((item) => item.id === event.id) ? current.events : [...current.events, event]
-            }
-          : current
-      )
-      void refreshSessions()
-    })
     const unsubscribeTask = window.kova.onTaskEvent((event) => {
       setActiveTask((current) =>
         current?.task.id === event.taskId
@@ -209,17 +217,18 @@ export function App(): React.JSX.Element {
             }
           : current
       )
+      if (event.type === 'completed' || event.type === 'error') {
+        void window.kova.getTask(event.taskId).then((next) => {
+          if (!next) return
+          setActiveTask((current) => current?.task.id === event.taskId ? next : current)
+        })
+      }
       void refreshTasks()
     })
     return () => {
-      unsubscribeAgent()
       unsubscribeTask()
     }
   }, [])
-
-  async function refreshSessions(): Promise<void> {
-    setSessions(await window.kova.listSessions())
-  }
 
   async function refreshTasks(): Promise<void> {
     setTasks(await window.kova.listTasks())
@@ -237,50 +246,94 @@ export function App(): React.JSX.Element {
     }
   }
 
-  async function selectSession(sessionId: string): Promise<void> {
-    const next = await window.kova.getSession(sessionId)
-    setActive(next)
-    setActiveTask(null)
-    setView('agents')
-    if (next) {
-      setWorkspace(next.session.workspace)
-      setAgentId(next.session.agentId)
-      setPermissionMode(next.session.permissionMode)
-      setWorkflowStage(next.session.workflowStage ?? 'development')
-      setClaudeAgent(next.session.claudeAgent ?? 'claude')
-      setModelProfileId(next.session.modelProfileId ?? modelProfiles[0]?.id ?? '')
-      const matchingWorkflow = workflowProfiles.find((item) => item.agentName === next.session.claudeAgent && item.stage === next.session.workflowStage)
-      setWorkflowProfileId(matchingWorkflow?.id ?? '')
-    }
-  }
-
   async function selectTask(taskId: string): Promise<void> {
     const next = await window.kova.getTask(taskId)
     if (!next) return
-    setActive(null)
     setActiveTask(next)
     setView('agents')
-    setAgentId('model')
     setModelProfileId(next.task.modelProfileId)
     setPermissionMode(next.task.permissionMode)
     setWorkspace(next.workspace?.path ?? '')
   }
 
-  async function chooseWorkspace(): Promise<void> {
+  async function selectActivity(item: ActivityItem): Promise<void> {
+    await selectTask(item.id)
+  }
+
+  function openCreateProject(): void {
+    setProjectName('')
+    setProjectSourceFolders([])
+    setProjectError('')
+    setShowCreateProject(true)
+  }
+
+  function closeCreateProject(): void {
+    if (creatingProject) return
+    setShowCreateProject(false)
+    setProjectError('')
+  }
+
+  async function addProjectSourceFolder(): Promise<void> {
     const chosen = await window.kova.chooseWorkspace()
-    if (chosen) {
-      setWorkspace(chosen)
-      if (active) setActive(null)
-      if (activeTask) setActiveTask(null)
+    if (!chosen) return
+    setProjectSourceFolders((current) => current.includes(chosen) ? current : [...current, chosen])
+    setProjectName((current) => current || workspaceName(chosen))
+    setProjectError('')
+  }
+
+  async function createProject(event: React.FormEvent): Promise<void> {
+    event.preventDefault()
+    if (!projectName.trim()) {
+      setProjectError('请输入项目名称')
+      return
+    }
+    if (projectSourceFolders.length === 0) {
+      setProjectError('请至少添加一个源码目录')
+      return
+    }
+
+    setCreatingProject(true)
+    setProjectError('')
+    try {
+      const created = await window.kova.createWorkspace({
+        name: projectName.trim(),
+        sourceFolders: projectSourceFolders,
+        defaultModelProfileId: modelProfileId || undefined
+      })
+      setWorkspaces((current) => [created, ...current.filter((item) => item.id !== created.id)])
+      setWorkspace(created.path)
+      setProjectsExpanded(true)
+      setExpandedProjectPaths((current) => current.includes(created.path) ? current : [...current, created.path])
+      setShowCreateProject(false)
+      newSession()
+    } catch (cause) {
+      setProjectError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setCreatingProject(false)
     }
   }
 
+  function openProject(path: string): void {
+    const project = workspaces.find((item) => item.path === path)
+    setWorkspace(path)
+    if (project?.defaultModelProfileId && modelProfiles.some((item) => item.id === project.defaultModelProfileId)) {
+      setModelProfileId(project.defaultModelProfileId)
+    }
+    setExpandedProjectPaths((current) => current.includes(path) ? current : [...current, path])
+    newSession()
+  }
+
+  function toggleProject(path: string): void {
+    setExpandedProjectPaths((current) =>
+      current.includes(path) ? current.filter((item) => item !== path) : [...current, path]
+    )
+  }
+
   function newSession(): void {
-    setActive(null)
     setActiveTask(null)
+    setPermissionMode('acceptEdits')
     setPrompt('')
     setError('')
-    setShowInspector(false)
     setView('agents')
   }
 
@@ -291,7 +344,7 @@ export function App(): React.JSX.Element {
       setError('请先选择 Agent 工作目录。')
       return
     }
-    if (agentId === 'model' && !modelProfileId) {
+    if (!modelProfileId) {
       setError('请先在设置中添加并选择模型配置。')
       return
     }
@@ -300,162 +353,211 @@ export function App(): React.JSX.Element {
     setPrompt('')
     try {
       if (activeTask) {
-        setError('新任务内核暂不支持追加指令，请先新建任务。')
-        setPrompt(nextPrompt)
+        await window.kova.continueTask({ taskId: activeTask.task.id, prompt: nextPrompt })
+        setActiveTask(await window.kova.getTask(activeTask.task.id))
+        await refreshTasks()
         return
       }
-      if (active) {
-        await window.kova.continueSession({ sessionId: active.session.id, prompt: nextPrompt })
-        setActive(await window.kova.getSession(active.session.id))
-      } else if (agentId === 'model') {
-        const task = await window.kova.startTask({
-          objective: nextPrompt,
-          workspace,
-          modelProfileId,
-          allowedPluginIds: ['com.kova.claude-code'],
-          permissionMode
-        })
-        setActiveTask((await window.kova.getTask(task.id)) ?? {
-          task,
-          runs: [],
-          events: [],
-          artifacts: []
-        })
-        await refreshTasks()
-      } else {
-        const session = await window.kova.startSession({
-          agentId,
-          workspace,
-          prompt: nextPrompt,
-          permissionMode
-          ,workflowStage
-          ,claudeAgent: agentId === 'claude' ? claudeAgent.trim() || undefined : undefined
-          ,claudePromptPrefix: agentId === 'claude' ? workflowProfiles.find((item) => item.id === workflowProfileId)?.promptPrefix : undefined
-        })
-        setActive((await window.kova.getSession(session.id)) ?? { session, events: [] })
-        await refreshSessions()
-      }
+      const task = await window.kova.startTask({
+        objective: nextPrompt,
+        workspace,
+        modelProfileId,
+        allowedPluginIds: [],
+        permissionMode
+      })
+      setActiveTask((await window.kova.getTask(task.id)) ?? {
+        task,
+        runs: [],
+        events: [],
+        artifacts: []
+      })
+      await refreshTasks()
     } catch (submitError) {
       setError(submitError instanceof Error ? submitError.message : String(submitError))
     }
   }
 
-  async function cancel(): Promise<void> {
-    if (activeTask) {
-      await window.kova.cancelTask(activeTask.task.id)
+  async function retryActiveTask(): Promise<void> {
+    if (!activeTask) return
+    setError('')
+    try {
+      await window.kova.retryTask(activeTask.task.id)
       setActiveTask(await window.kova.getTask(activeTask.task.id))
       await refreshTasks()
+    } catch (retryError) {
+      setError(retryError instanceof Error ? retryError.message : String(retryError))
+    }
+  }
+
+  async function cancel(): Promise<void> {
+    if (!activeTask) return
+    await window.kova.cancelTask(activeTask.task.id)
+    setActiveTask(await window.kova.getTask(activeTask.task.id))
+    await refreshTasks()
+  }
+
+  async function deleteOneTask(taskId: string): Promise<void> {
+    const target = tasks.find((task) => task.id === taskId)
+    if (target?.status === 'running') {
+      window.alert('请先停止正在运行的任务，再删除记录。')
       return
     }
-    if (!active) return
-    await window.kova.cancelSession(active.session.id)
-    setActive(await window.kova.getSession(active.session.id))
-    await refreshSessions()
-  }
+    if (!window.confirm(`确定删除“${target?.title ?? '这个任务'}”吗？\n\n将删除该任务的全部运行轮次、事件和产物索引，不会删除工作目录中的文件。`)) return
 
-  async function renameActiveSession(): Promise<void> {
-    if (!active) return
-    await renameOneSession(active.session.id)
-  }
-
-  async function renameOneSession(sessionId: string): Promise<void> {
-    const target = sessions.find((session) => session.id === sessionId)
-    if (!target) return
-    const title = window.prompt('修改任务名称', target.title)?.trim()
-    if (!title || title === target.title) return
-
-    const session = await window.kova.renameSession({ sessionId, title })
-    if (active?.session.id === sessionId) setActive({ ...active, session })
-    await refreshSessions()
-  }
-
-  async function deleteOneSession(sessionId: string): Promise<void> {
-    const target = sessions.find((session) => session.id === sessionId)
-    if (!window.confirm(`确定删除“${target?.title ?? '这个任务'}”及其对话记录吗？\n\n不会删除工作目录中的任何文件。`)) return
-
-    await window.kova.deleteSession(sessionId)
-    if (active?.session.id === sessionId) {
-      setActive(null)
-      setPrompt('')
+    try {
+      await window.kova.deleteTask(taskId)
+      if (activeTask?.task.id === taskId) {
+        setActiveTask(null)
+        setPrompt('')
+      }
+      await refreshTasks()
+    } catch (deleteError) {
+      window.alert(deleteError instanceof Error ? deleteError.message : String(deleteError))
     }
-    await refreshSessions()
   }
 
-  async function removeProjectRecords(path: string): Promise<void> {
-    const projectSessions = sessions.filter((session) => session.workspace === path)
-    if (!window.confirm(`确定从 Kova 中移除“${workspaceName(path)}”吗？\n\n将删除该项目的 ${projectSessions.length} 条任务和对话记录，但不会删除代码目录。`)) return
-
-    await Promise.all(projectSessions.map((session) => window.kova.deleteSession(session.id)))
-    if (active?.session.workspace === path) setActive(null)
-    await refreshSessions()
+  async function deleteActivity(item: ActivityItem): Promise<void> {
+    await deleteOneTask(item.id)
   }
 
-  const isRunning =
-    active?.session.status === 'running' || activeTask?.task.status === 'running'
+  const isRunning = activeTask?.task.status === 'running'
+  const isActiveTaskRunning = activeTask?.task.status === 'running'
 
   return (
     <div className="app-shell">
       <aside className="sidebar">
         <div className="window-drag" />
         <div className="brand">
-          <span className="brand-mark"><img src={kovaIcon} alt="" /></span>
           <span>Kova</span>
+          <small>v{packageInfo.version}</small>
         </div>
-        <nav className="main-nav" aria-label="主导航">
-          <button className={view === 'today' ? 'active' : ''} type="button" onClick={() => setView('today')}>
-            今日
-          </button>
-          <button className={view === 'projects' ? 'active' : ''} type="button" onClick={() => setView('projects')}>
-            项目
-          </button>
-          <button className={view === 'tasks' ? 'active' : ''} type="button" onClick={() => setView('tasks')}>
-            任务
-            {runningCount > 0 && <span className="nav-count">{runningCount}</span>}
-          </button>
-          <button className={view === 'agents' ? 'active' : ''} type="button" onClick={() => setView('agents')}>
-            Agent
-          </button>
-          <button className={view === 'plugins' ? 'active' : ''} type="button" onClick={() => setView('plugins')}>
-            扩展
-          </button>
-        </nav>
+        <button
+          className={`new-task-button ${view === 'agents' && !activeTask ? 'active' : ''}`}
+          type="button"
+          onClick={newSession}
+        >
+          <SquarePen aria-hidden="true" />
+          <span>新建任务</span>
+          <CirclePlus className="new-task-plus" aria-hidden="true" />
+        </button>
 
-        <div className="sidebar-label">最近会话</div>
-        <div className="session-list">
-          {sessions.length === 0 && <p className="empty-copy">还没有会话</p>}
-          {sessions.slice(0, 6).map((session) => (
-            <div className={`session-nav-item ${active?.session.id === session.id && view === 'agents' ? 'active' : ''}`} key={session.id}>
-              <button className="session-item" type="button" onClick={() => void selectSession(session.id)}>
-                <span className={`status-pip ${session.status}`} />
-                <span className="session-copy">
-                  <strong>{session.title}</strong>
-                  <small>{session.agentId} · {formatTime(session.updatedAt)}</small>
-                </span>
-              </button>
-              <span className="session-nav-actions">
-                <button type="button" aria-label={`重命名 ${session.title}`} onClick={() => void renameOneSession(session.id)}>重命名</button>
-                <button type="button" aria-label={`删除 ${session.title}`} onClick={() => void deleteOneSession(session.id)}>删除</button>
-              </span>
+        <section className="sidebar-group">
+          <div className="sidebar-group-heading">
+            <button className="sidebar-group-toggle" type="button" aria-expanded={projectsExpanded} onClick={() => setProjectsExpanded((expanded) => !expanded)}>
+              <span>项目</span>
+              <ChevronRight className={projectsExpanded ? 'expanded' : ''} aria-hidden="true" />
+            </button>
+            <button className="sidebar-group-add" type="button" aria-label="创建项目" title="创建项目" onClick={openCreateProject}>
+              <CirclePlus aria-hidden="true" />
+            </button>
+          </div>
+          {projectsExpanded && (
+            <div className="project-nav-list">
+              {projects.length === 0 && <p className="empty-copy">还没有项目</p>}
+              {projects.slice(0, 6).map((project) => (
+                <div className="project-nav-entry" key={project.path}>
+                  <div className="project-nav-row">
+                    <button
+                      className="project-toggle"
+                      type="button"
+                      title={project.path}
+                      aria-expanded={expandedProjectPaths.includes(project.path)}
+                      onClick={() => toggleProject(project.path)}
+                    >
+                      <ChevronRight className={expandedProjectPaths.includes(project.path) ? 'expanded' : ''} aria-hidden="true" />
+                      <Folder aria-hidden="true" />
+                      <span>{project.name}</span>
+                    </button>
+                    <button
+                      className="project-new-task"
+                      type="button"
+                      title={`在 ${project.name} 中新建任务`}
+                      aria-label={`在 ${project.name} 中新建任务`}
+                      onClick={() => openProject(project.path)}
+                    >
+                      <CirclePlus aria-hidden="true" />
+                    </button>
+                  </div>
+                  {expandedProjectPaths.includes(project.path) && (
+                    <div className="project-session-list">
+                      {project.items.length === 0 && <p>暂无任务</p>}
+                      {project.items.slice(0, 8).map((item) => (
+                        <div
+                          className={`project-session-item ${activeTask?.task.id === item.id ? 'active' : ''}`}
+                          key={item.key}
+                        >
+                          <button type="button" title={item.title} onClick={() => void selectActivity(item)}>
+                            <span className={`status-pip ${item.status}`} />
+                            <span>{item.title}</span>
+                          </button>
+                          <button
+                            className="project-session-delete"
+                            type="button"
+                            aria-label={`删除 ${item.title}`}
+                            title={item.status === 'running' ? '请先停止任务' : '删除记录'}
+                            disabled={item.status === 'running'}
+                            onClick={() => void deleteActivity(item)}
+                          >
+                            <Trash2 aria-hidden="true" />
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              ))}
             </div>
-          ))}
-          {tasks.slice(0, 4).map((task) => (
-            <div className={`session-nav-item ${activeTask?.task.id === task.id && view === 'agents' ? 'active' : ''}`} key={task.id}>
-              <button className="session-item" type="button" onClick={() => void selectTask(task.id)}>
-                <span className={`status-pip ${task.status}`} />
-                <span className="session-copy">
-                  <strong>{task.title}</strong>
-                  <small>模型编排 · {formatTime(task.updatedAt)}</small>
-                </span>
-              </button>
+          )}
+        </section>
+
+        <section className="sidebar-group recent-group">
+          <button className="sidebar-group-toggle" type="button" aria-expanded={recentExpanded} onClick={() => setRecentExpanded((expanded) => !expanded)}>
+            <span>最近</span>
+            <ChevronRight className={recentExpanded ? 'expanded' : ''} aria-hidden="true" />
+          </button>
+          {recentExpanded && (
+            <div className="session-list">
+              {activityItems.length === 0 && <p className="empty-copy">还没有任务</p>}
+              {activityItems.slice(0, 10).map((item) => (
+                <div
+                  className={`session-nav-item ${
+                    view === 'agents' &&
+                    activeTask?.task.id === item.id
+                      ? 'active'
+                      : ''
+                  }`}
+                  key={item.key}
+                >
+                  <button className="session-item" type="button" onClick={() => void selectActivity(item)}>
+                    <span className={`status-pip ${item.status}`} />
+                    <span className="session-copy">
+                      <strong>{item.title}</strong>
+                      <small>{item.source} · {formatTime(item.updatedAt)}</small>
+                    </span>
+                  </button>
+                  <span className="session-nav-actions">
+                    <button
+                      type="button"
+                      aria-label={`删除 ${item.title}`}
+                      title={item.status === 'running' ? '请先停止任务' : '删除记录'}
+                      disabled={item.status === 'running'}
+                      onClick={() => void deleteActivity(item)}
+                    >
+                      <Trash2 aria-hidden="true" />
+                    </button>
+                  </span>
+                </div>
+              ))}
             </div>
-          ))}
-        </div>
+          )}
+        </section>
         <button
           className={`sidebar-action ${view === 'settings' ? 'active' : ''}`}
           type="button"
           onClick={() => setView('settings')}
         >
-          设置
+          <Settings aria-hidden="true" />
+          <span>设置</span>
         </button>
       </aside>
 
@@ -463,24 +565,24 @@ export function App(): React.JSX.Element {
         {view === 'today' && (
           <main className="page-main">
             <PageHeader title="今日" description="你的开发任务、Agent 运行状态和待处理事项。" />
-            <section className={`attention-panel ${attentionSessions.length === 0 ? 'clear' : ''}`}>
+            <section className={`attention-panel ${attentionItems.length === 0 ? 'clear' : ''}`}>
               <div className="attention-title">
                 <span>⚠</span>
                 <div>
                   <h2>等待你处理</h2>
-                  <p>{attentionSessions.length === 0 ? '目前没有需要介入的异常任务。' : `${attentionSessions.length} 个任务需要你检查后继续。`}</p>
+                  <p>{attentionItems.length === 0 ? '目前没有需要介入的异常任务。' : `${attentionItems.length} 个任务需要你检查后继续。`}</p>
                 </div>
               </div>
-              {attentionSessions[0] && (
-                <button type="button" onClick={() => void selectSession(attentionSessions[0].id)}>
-                  查看“{attentionSessions[0].title}” →
+              {attentionItems[0] && (
+                <button type="button" onClick={() => void selectActivity(attentionItems[0])}>
+                  查看“{attentionItems[0].title}” →
                 </button>
               )}
             </section>
             <div className="metric-grid">
               <MetricCard label="进行中" value={runningCount} detail="正在运行的 Agent 任务" />
               <MetricCard label="需要关注" value={attentionCount} detail="执行失败或需要处理" />
-              <MetricCard label="已完成" value={completedCount} detail="历史完成会话" />
+              <MetricCard label="已完成" value={completedCount} detail="历史完成任务" />
             </div>
             <div className="content-grid">
               <section className="panel">
@@ -488,7 +590,7 @@ export function App(): React.JSX.Element {
                   <div><h2>当前任务</h2><p>最近更新的开发工作</p></div>
                   <button className="text-button" type="button" onClick={() => setView('tasks')}>查看全部</button>
                 </div>
-                <SessionTable sessions={sessions.slice(0, 5)} onSelect={selectSession} />
+                <ActivityTable items={activityItems.slice(0, 5)} onSelect={selectActivity} onDelete={deleteActivity} />
               </section>
               <section className="panel">
                 <div className="panel-heading"><div><h2>Agent 状态</h2><p>本机可用的执行能力</p></div></div>
@@ -523,16 +625,16 @@ export function App(): React.JSX.Element {
                       <p className="path-text">{project.path}</p>
                     </div>
                     <dl>
-                      <div><dt>任务</dt><dd>{project.sessions.length}</dd></div>
-                      <div><dt>运行中</dt><dd>{project.sessions.filter((item) => item.status === 'running').length}</dd></div>
-                      <div><dt>最近活动</dt><dd>{formatTime(project.sessions[0].updatedAt)}</dd></div>
+                      <div><dt>任务</dt><dd>{project.items.length}</dd></div>
+                      <div><dt>运行中</dt><dd>{project.items.filter((item) => item.status === 'running').length}</dd></div>
+                      <div><dt>最近活动</dt><dd>{project.items[0] ? formatTime(project.items[0].updatedAt) : '暂无'}</dd></div>
                     </dl>
                     <div className="project-actions">
-                      <button className="secondary-button" type="button" onClick={() => void selectSession(project.sessions[0].id)}>
-                        打开最近任务 →
-                      </button>
-                      <button className="delete-button" type="button" onClick={() => void removeProjectRecords(project.path)}>
-                        移除记录
+                      <button className="secondary-button" type="button" onClick={() => {
+                        if (project.items[0]) void selectActivity(project.items[0])
+                        else openProject(project.path)
+                      }}>
+                        {project.items[0] ? '打开最近任务 →' : '在项目中新建任务 →'}
                       </button>
                     </div>
                   </article>
@@ -547,7 +649,7 @@ export function App(): React.JSX.Element {
             <PageHeader title="任务" description="任务是需求、Agent 会话和最终结果的统一载体。" />
             <section className="panel">
               <div className="panel-heading">
-                <div><h2>全部任务</h2><p>当前版本由 Agent 会话自动生成任务记录</p></div>
+                <div><h2>全部任务</h2><p>模型编排任务与本地 Agent 会话统一显示</p></div>
                 <div className="filter-control" aria-label="任务筛选">
                   {([
                     ['all', '全部'],
@@ -561,25 +663,23 @@ export function App(): React.JSX.Element {
                   ))}
                 </div>
               </div>
-              <SessionTable sessions={filteredSessions} onSelect={selectSession} />
+              <ActivityTable items={filteredActivities} onSelect={selectActivity} onDelete={deleteActivity} />
             </section>
           </main>
         )}
 
         {view === 'agents' && (
-          <div className={`agent-layout ${showInspector ? '' : 'inspector-hidden'}`}>
+          <div className="agent-layout">
             <main className="conversation">
               <header className="conversation-header">
                 <div>
-                  <h1>{activeTask?.task.title ?? active?.session.title ?? '新建 AI 任务'}</h1>
+                  <h1>{activeTask?.task.title ?? '新建 AI 任务'}</h1>
                   <p>{activeTask
-                    ? `${modelProfiles.find((item) => item.id === activeTask.task.modelProfileId)?.name ?? '自定义模型'} · ${statusLabel(activeTask.task.status === 'waiting' || activeTask.task.status === 'queued' || activeTask.task.status === 'draft' ? 'idle' : activeTask.task.status)}`
-                    : active
-                      ? `${active.session.agentId === 'model' ? modelProfiles.find((item) => item.id === active.session.modelProfileId)?.name ?? '自定义模型' : active.session.agentId} · ${statusLabel(active.session.status)}`
-                      : '选择模型或直接运行 CLI'}</p>
+                    ? `${modelProfiles.find((item) => item.id === activeTask.task.modelProfileId)?.name ?? '自定义模型'} · ${statusLabel(activeTask.task.status)}`
+                    : workspace ? `${workspaceName(workspace)} · 新任务` : '选择项目，然后描述任务目标'}</p>
                 </div>
                 <div className="header-actions">
-                  <button className="icon-button" type="button" aria-label="新建会话" title="新建会话" onClick={newSession}>
+                  <button className="icon-button" type="button" aria-label="新建任务" title="新建任务" onClick={newSession}>
                     +
                   </button>
                   {isRunning && (
@@ -587,36 +687,23 @@ export function App(): React.JSX.Element {
                       停止
                     </button>
                   )}
-                  <button className="ghost-button" type="button" onClick={() => setShowInspector((visible) => !visible)}>
-                    {showInspector ? '收起配置' : '显示配置'}
-                  </button>
+                  {activeTask &&
+                    (activeTask.task.status === 'failed' || activeTask.task.status === 'cancelled') && (
+                    <button className="ghost-button" type="button" onClick={() => void retryActiveTask()}>
+                      重试
+                    </button>
+                  )}
                 </div>
               </header>
 
               <section className="event-stream" aria-live="polite">
-                {!active && !activeTask && (
+                {!activeTask && (
                   <div className="welcome">
                     <div className="welcome-icon">✦</div>
-                    <h2>让模型调用本地能力开始工作</h2>
-                    <p>选择自定义模型和工作目录，由模型规划并调用 Claude Code；也可以直接运行 CLI。</p>
+                    <h2>开始新任务</h2>
+                    <p>描述你想完成的工作。</p>
                   </div>
                 )}
-                {active?.events.map((event) => (
-                  <article className={`event event-${event.type}`} key={event.id}>
-                    <div className="event-icon">
-                      {event.type === 'error' ? '✕' :
-                        event.type === 'completed' ? '✓' :
-                        event.type === 'tool' ? '⌘' :
-                        event.type === 'progress' ? '◌' :
-                        event.type === 'user_message' ? '◆' :
-                        '◇'}
-                    </div>
-                    <div className="event-content">
-                      <div className="event-meta"><strong>{eventLabels[event.type]}</strong><time>{formatTime(event.createdAt)}</time></div>
-                      <p>{event.text}</p>
-                    </div>
-                  </article>
-                ))}
                 {activeTask?.events.map((event) => (
                   <article className={`event event-${event.type}`} key={event.id}>
                     <div className="event-icon">
@@ -628,7 +715,7 @@ export function App(): React.JSX.Element {
                     </div>
                     <div className="event-content">
                       <div className="event-meta"><strong>{taskEventLabels[event.type]}</strong><time>{formatTime(event.createdAt)}</time></div>
-                      <p>{event.text}</p>
+                      <TaskEventBody event={event} />
                     </div>
                   </article>
                 ))}
@@ -639,6 +726,7 @@ export function App(): React.JSX.Element {
                 <div className="composer-box">
                   <textarea
                     value={prompt}
+                    disabled={isActiveTaskRunning}
                     onChange={(event) => setPrompt(event.target.value)}
                     onKeyDown={(event) => {
                       if (event.key === 'Enter' && !event.shiftKey) {
@@ -646,88 +734,21 @@ export function App(): React.JSX.Element {
                         void submit()
                       }
                     }}
-                    placeholder={active || activeTask ? '继续描述任务…' : '描述你希望完成的任务…'}
+                    placeholder={isActiveTaskRunning ? '任务运行中…' : activeTask ? '继续描述任务…' : '描述你希望完成的任务…'}
                     rows={3}
                     aria-label="会话输入"
                   />
-                  <button className="send-button" type="button" aria-label={isRunning ? '加入执行队列' : '发送'} title={isRunning ? '当前轮结束后自动继续' : '发送'} disabled={!prompt.trim()} onClick={() => void submit()}>
+                  <button className="send-button" type="button" aria-label="发送" title="发送" disabled={!prompt.trim() || isActiveTaskRunning} onClick={() => void submit()}>
                     →
                   </button>
                 </div>
-                <p className="composer-hint">{isRunning ? 'Agent 正在运行 · 现在发送的指令会自动排队' : 'Enter 发送 · Shift + Enter 换行'}</p>
+                <p className="composer-hint">{isActiveTaskRunning
+                  ? '任务正在运行，可停止后再追加指令'
+                  : !activeTask && workspace
+                    ? `当前项目：${workspaceName(workspace)} · Enter 发送`
+                    : 'Enter 发送 · Shift + Enter 换行'}</p>
               </footer>
             </main>
-
-            {showInspector && (
-              <aside className="inspector">
-                <div className="inspector-title"><h2>运行信息</h2></div>
-                <label>
-                  <span>Agent</span>
-                  <select
-                    value={agentId}
-                    disabled={isRunning}
-                    onChange={(event) => {
-                      setAgentId(event.target.value as AgentId)
-                      if (active) setActive(null)
-                      if (activeTask) setActiveTask(null)
-                    }}
-                  >
-                    {agents.map((agent) => (
-                      <option key={agent.id} value={agent.id} disabled={!agent.available}>
-                        {agent.name}{agent.available ? '' : agent.version ? '（待接入）' : '（未安装）'}
-                      </option>
-                    ))}
-                    <option value="model" disabled={modelProfiles.length === 0}>AI 编排（模型 + 插件）{modelProfiles.length ? '' : '（请先配置）'}</option>
-                  </select>
-                </label>
-                {agentId !== 'model' && selectedAgent && (
-                  <div className={`availability ${selectedAgent.available ? 'available' : ''}`}>
-                    <span className="status-pip completed" />
-                    <span>{selectedAgent.available ? selectedAgent.version : '当前电脑不可用'}</span>
-                  </div>
-                )}
-                {agentId === 'model' && <label><span>编排模型</span><select value={modelProfileId} disabled={isRunning} onChange={(event) => { setModelProfileId(event.target.value); if (active) setActive(null); if (activeTask) setActiveTask(null) }}>{modelProfiles.map((model) => <option key={model.id} value={model.id}>{model.name} · {model.model}</option>)}</select></label>}
-                <label>
-                  <span>权限模式</span>
-                  <select
-                    value={permissionMode}
-                    disabled={isRunning}
-                    onChange={(event) => {
-                      setPermissionMode(event.target.value as PermissionMode)
-                      if (active) setActive(null)
-                    }}
-                  >
-                    <option value="plan">规划（只读）</option>
-                    <option value="dontAsk">严格（无法确认则拒绝）</option>
-                    <option value="acceptEdits">允许项目内编辑</option>
-                  </select>
-                </label>
-                {agentId === 'claude' && <>
-                  <label><span>阶段 Agent</span><select value={workflowProfileId} disabled={isRunning} onChange={(event) => {
-                    const selected = workflowProfiles.find((item) => item.id === event.target.value)
-                    setWorkflowProfileId(event.target.value)
-                    if (selected) { setWorkflowStage(selected.stage); setClaudeAgent(selected.agentName) }
-                    if (active) setActive(null)
-                  }}>{workflowProfiles.map((profile) => <option key={profile.id} value={profile.id}>{({ design: '设计', development: '开发', testing: '测试' })[profile.stage]} · {profile.name}</option>)}</select></label>
-                  <label><span>Claude Agent</span><input className="inspector-input" value={claudeAgent} disabled={isRunning} onChange={(event) => setClaudeAgent(event.target.value)} placeholder="例如：developer" /></label>
-                </>}
-                <div className="field-group">
-                  <span>工作目录</span>
-                  <button className="workspace-button" type="button" disabled={isRunning} onClick={() => void chooseWorkspace()}>
-                    <span>{workspace || '选择目录'}</span>
-                  </button>
-                </div>
-                <div className="separator" />
-                <dl className="run-details">
-                  <div><dt>状态</dt><dd>{activeTask
-                    ? statusLabel(activeTask.task.status === 'waiting' || activeTask.task.status === 'queued' || activeTask.task.status === 'draft' ? 'idle' : activeTask.task.status)
-                    : active ? statusLabel(active.session.status) : '未开始'}</dd></div>
-                  <div><dt>会话 ID</dt><dd>{active?.session.nativeSessionId?.slice(0, 8) ?? '—'}</dd></div>
-                  <div><dt>事件数</dt><dd>{activeTask?.events.length ?? active?.events.length ?? 0}</dd></div>
-                </dl>
-                <div className="safety-note"><strong>安全边界</strong><p>客户端不会提供跳过全部权限的运行模式。</p></div>
-              </aside>
-            )}
           </div>
         )}
 
@@ -735,20 +756,43 @@ export function App(): React.JSX.Element {
           <main className="page-main">
             <div className="page-header">
               <div>
-                <h1>CLI 能力</h1>
-                <p>查看模型可以调用的本地 CLI 插件、依赖和权限范围。</p>
+                <h1>能力与扩展</h1>
+                <p>查看模型可调用的 Kova 原生工具、CLI 插件和权限范围。</p>
               </div>
               <button className="extension-action" type="button" disabled={scanningPlugins} onClick={() => void rescanPlugins()}>
                 {scanningPlugins ? '检查中' : '检查依赖'}
               </button>
             </div>
             <div className="plugin-summary">
-              <span>{plugins.length} 个已注册</span>
+              <span>{nativeCapabilities.length + plugins.length} 个能力组与扩展</span>
+              <span>{nativeCapabilities.length} 个原生工具</span>
               <span>{plugins.filter((plugin) => plugin.status === 'ready').length} 个运行就绪</span>
               <span>{plugins.filter((plugin) => plugin.status !== 'ready').length} 个需要处理</span>
               {pluginsScannedAt && <time>最近依赖检查：{formatTime(pluginsScannedAt)}</time>}
             </div>
             <div className="plugin-list">
+              <article className="panel plugin-card core-tools-card">
+                <div className="plugin-card-header">
+                  <span className="plugin-icon">K</span>
+                  <div>
+                    <h2>Kova Core Tools</h2>
+                    <p>内置只读工作区能力，不依赖外部 CLI，并受项目目录边界保护。</p>
+                  </div>
+                  <span className="plugin-status status-ready">运行就绪</span>
+                </div>
+                <div className="native-capability-grid">
+                  {nativeCapabilities.map((capability) => (
+                    <div className="native-capability" key={capability.id}>
+                      <span>
+                        <strong>{capability.name}</strong>
+                        <small>{capability.id}</small>
+                      </span>
+                      <p>{capability.description}</p>
+                      <span className={`risk-badge risk-${capability.risk}`}>{capability.risk === 'read' ? '只读' : capability.risk}</span>
+                    </div>
+                  ))}
+                </div>
+              </article>
               {plugins.map((plugin) => (
                 <article className="panel plugin-card" key={plugin.id}>
                   <div className="plugin-card-header">
@@ -786,45 +830,7 @@ export function App(): React.JSX.Element {
 
         {view === 'settings' && (
           <main className="page-main settings-page">
-            <div className="page-header"><div><h1>设置</h1><p>调整客户端外观和默认体验。</p></div></div>
-            <section className="panel settings-section">
-              <div><h2>外观</h2><p>皮肤设置保存在本机，下次启动会自动恢复。</p></div>
-              <div className="setting-row">
-                <div><strong>显示模式</strong><small>切换深色或浅色界面</small></div>
-                <div className="segmented-control">
-                  <button className={themeMode === 'dark' ? 'active' : ''} type="button" onClick={() => setThemeMode('dark')}>深色</button>
-                  <button className={themeMode === 'light' ? 'active' : ''} type="button" onClick={() => setThemeMode('light')}>浅色</button>
-                </div>
-              </div>
-              <div className="setting-row accent-setting">
-                <div><strong>主题颜色</strong><small>用于按钮、选中状态和运行标识</small></div>
-                <div className="accent-options">
-                  {accents.map((item) => (
-                    <button
-                      key={item.id}
-                      className={accent === item.id ? 'active' : ''}
-                      type="button"
-                      aria-label={item.name}
-                      title={item.name}
-                      style={{ '--swatch': item.color } as React.CSSProperties}
-                      onClick={() => setAccent(item.id)}
-                    />
-                  ))}
-                </div>
-              </div>
-            </section>
-            <section className="panel settings-section">
-              <div><h2>Agent 客户端</h2><p>当前检测到的本地 Agent。</p></div>
-              <div className="agent-summary-list">
-                {agents.map((agent) => (
-                  <div className="agent-summary" key={agent.id}>
-                    <span className={`agent-logo agent-${agent.id}`}>{agent.id}</span>
-                    <span><strong>{agent.name}</strong><small>{agent.description}</small></span>
-                    <span className={`availability-badge ${agent.available ? 'ready' : ''}`}>{agent.available ? '可用' : agent.version ? '待接入' : '未安装'}</span>
-                  </div>
-                ))}
-              </div>
-            </section>
+            <div className="page-header"><div><h1>设置</h1></div></div>
             <ModelSettings
               models={modelProfiles}
               onSaved={(model) => {
@@ -836,17 +842,74 @@ export function App(): React.JSX.Element {
                 if (modelProfileId === id) setModelProfileId('')
               }}
             />
-            <WorkflowSettings
-              profiles={workflowProfiles}
-              onSaved={(profile) => setWorkflowProfiles((current) => {
-                const exists = current.some((item) => item.id === profile.id)
-                return exists ? current.map((item) => item.id === profile.id ? profile : item) : [...current, profile]
-              })}
-              onDeleted={(id) => setWorkflowProfiles((current) => current.filter((item) => item.id !== id))}
-            />
+            <section className="panel settings-section">
+              <div><h2>外观</h2></div>
+              <div className="setting-row">
+                <div><strong>显示模式</strong></div>
+                <div className="segmented-control">
+                  <button className={themeMode === 'dark' ? 'active' : ''} type="button" onClick={() => setThemeMode('dark')}>深色</button>
+                  <button className={themeMode === 'light' ? 'active' : ''} type="button" onClick={() => setThemeMode('light')}>浅色</button>
+                </div>
+              </div>
+            </section>
           </main>
         )}
       </section>
+      {showCreateProject && (
+        <div className="modal-backdrop" role="presentation" onMouseDown={(event) => {
+          if (event.target === event.currentTarget) closeCreateProject()
+        }}>
+          <form className="create-project-modal" onSubmit={(event) => void createProject(event)}>
+            <div className="create-project-title">
+              <h2>创建项目</h2>
+              <button type="button" aria-label="关闭" onClick={closeCreateProject}>
+                <X aria-hidden="true" />
+              </button>
+            </div>
+            <label className="project-name-field">
+              <Folder aria-hidden="true" />
+              <input
+                autoFocus
+                value={projectName}
+                onChange={(event) => setProjectName(event.target.value)}
+                placeholder="项目名称"
+                aria-label="项目名称"
+              />
+            </label>
+            <div className="project-source-field">
+              <span>Source folders</span>
+              <button className="source-folder-picker" type="button" onClick={() => void addProjectSourceFolder()}>
+                <FolderPlus aria-hidden="true" />
+                <strong>添加 Kova 可读取和编辑的文件夹</strong>
+              </button>
+              {projectSourceFolders.length > 0 && (
+                <div className="source-folder-list">
+                  {projectSourceFolders.map((folder) => (
+                    <div key={folder}>
+                      <Folder aria-hidden="true" />
+                      <span title={folder}>{folder}</span>
+                      <button
+                        type="button"
+                        aria-label={`移除 ${folder}`}
+                        onClick={() => setProjectSourceFolders((current) => current.filter((item) => item !== folder))}
+                      >
+                        <X aria-hidden="true" />
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            {projectError && <p className="project-form-error">{projectError}</p>}
+            <div className="create-project-actions">
+              <button className="project-cancel-button" type="button" disabled={creatingProject} onClick={closeCreateProject}>取消</button>
+              <button className="project-submit-button" type="submit" disabled={creatingProject || !projectName.trim() || projectSourceFolders.length === 0}>
+                {creatingProject ? '创建中…' : '创建项目'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
     </div>
   )
 }
@@ -867,17 +930,16 @@ function PageHeader({
 
 function ModelSettings({ models, onSaved, onDeleted }: { models: ModelProfile[]; onSaved: (model: ModelProfile) => void; onDeleted: (id: string) => void }): React.JSX.Element {
   const [name, setName] = useState('')
-  const [baseUrl, setBaseUrl] = useState('https://api.openai.com/v1')
+  const [baseUrl, setBaseUrl] = useState('https://api.deepseek.com')
   const [model, setModel] = useState('')
   const [apiKey, setApiKey] = useState('')
-  const [systemPrompt, setSystemPrompt] = useState('你是一个严谨、清晰的 AI 助手。')
   const [error, setError] = useState('')
 
   async function save(event: React.FormEvent): Promise<void> {
     event.preventDefault()
     setError('')
     try {
-      const saved = await window.kova.saveModelProfile({ name, baseUrl, model, apiKey, systemPrompt, temperature: 0.7 })
+      const saved = await window.kova.saveModelProfile({ name, baseUrl, model, apiKey, temperature: 0.2 })
       onSaved(saved)
       setName(''); setModel(''); setApiKey('')
     } catch (cause) {
@@ -887,45 +949,34 @@ function ModelSettings({ models, onSaved, onDeleted }: { models: ModelProfile[];
 
   return (
     <section className="panel settings-section">
-      <div><h2>自定义模型</h2><p>支持 OpenAI 兼容接口；配置后可像本地 Agent 一样创建和继续会话。</p></div>
+      <div><h2>模型</h2><p>配置用于执行任务的第三方模型。</p></div>
+      <div className="config-list">
+        {models.length === 0 && <p className="settings-empty">还没有模型配置。</p>}
+        {models.map((item) => (
+          <div key={item.id}>
+            <span><strong>{item.name}</strong><small>{item.model} · {item.baseUrl}</small></span>
+            <button
+              className="delete-button"
+              type="button"
+              onClick={() => {
+                if (window.confirm(`确定删除模型配置“${item.name}”吗？`)) {
+                  void window.kova.deleteModelProfile(item.id).then(() => onDeleted(item.id))
+                }
+              }}
+            >
+              删除
+            </button>
+          </div>
+        ))}
+      </div>
       <form className="settings-form" onSubmit={(event) => void save(event)}>
-        <input value={name} onChange={(event) => setName(event.target.value)} placeholder="配置名称，例如：公司 GPT"/>
-        <input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="接口地址，例如：https://api.openai.com/v1"/>
+        <input value={name} onChange={(event) => setName(event.target.value)} placeholder="配置名称"/>
+        <input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="API 地址"/>
         <input value={model} onChange={(event) => setModel(event.target.value)} placeholder="模型 ID"/>
         <input value={apiKey} type="password" onChange={(event) => setApiKey(event.target.value)} placeholder="API Key（仅保存在本机）"/>
-        <textarea value={systemPrompt} onChange={(event) => setSystemPrompt(event.target.value)} rows={2} placeholder="系统提示词"/>
         {error && <p className="form-error">{error}</p>}
-        <button className="primary-button" type="submit">保存模型</button>
+        <button className="primary-button" type="submit">添加模型</button>
       </form>
-      <div className="config-list">{models.map((item) => <div key={item.id}><span><strong>{item.name}</strong><small>{item.model} · {item.baseUrl}</small></span><button className="delete-button" onClick={() => void window.kova.deleteModelProfile(item.id).then(() => onDeleted(item.id))}>删除</button></div>)}</div>
-    </section>
-  )
-}
-
-function WorkflowSettings({ profiles, onSaved, onDeleted }: { profiles: ClaudeWorkflowProfile[]; onSaved: (profile: ClaudeWorkflowProfile) => void; onDeleted: (id: string) => void }): React.JSX.Element {
-  const [stage, setStage] = useState<WorkflowStage>('development')
-  const [name, setName] = useState('')
-  const [agentName, setAgentName] = useState('')
-  const [prefix, setPrefix] = useState('')
-
-  async function save(event: React.FormEvent): Promise<void> {
-    event.preventDefault()
-    const saved = await window.kova.saveWorkflowProfile({ stage, name, agentName, promptPrefix: prefix })
-    onSaved(saved)
-    setName(''); setAgentName(''); setPrefix('')
-  }
-
-  return (
-    <section className="panel settings-section">
-      <div><h2>阶段 Agent</h2><p>把设计、开发、测试映射到不同的 <code>claude --agent</code>，并附加阶段提示词。</p></div>
-      <form className="settings-form workflow-form" onSubmit={(event) => void save(event)}>
-        <select value={stage} onChange={(event) => setStage(event.target.value as WorkflowStage)}><option value="design">设计</option><option value="development">开发</option><option value="testing">测试</option></select>
-        <input value={name} onChange={(event) => setName(event.target.value)} placeholder="配置名称"/>
-        <input value={agentName} onChange={(event) => setAgentName(event.target.value)} placeholder="Claude Agent 名称"/>
-        <textarea value={prefix} onChange={(event) => setPrefix(event.target.value)} rows={2} placeholder="阶段提示词前缀"/>
-        <button className="primary-button" type="submit">添加阶段 Agent</button>
-      </form>
-      <div className="config-list">{profiles.map((item) => <div key={item.id}><span><strong>{({ design: '设计', development: '开发', testing: '测试' })[item.stage]} · {item.name}</strong><small>claude --agent {item.agentName}</small></span><button className="delete-button" onClick={() => void window.kova.deleteWorkflowProfile(item.id).then(() => onDeleted(item.id))}>删除</button></div>)}</div>
     </section>
   )
 }
@@ -940,37 +991,76 @@ function MetricCard({ label, value, detail }: { label: string; value: number; de
   )
 }
 
-function SessionTable({
-  sessions,
-  onSelect
+function ActivityTable({
+  items,
+  onSelect,
+  onDelete
 }: {
-  sessions: AgentSession[]
-  onSelect: (id: string) => Promise<void>
+  items: ActivityItem[]
+  onSelect: (item: ActivityItem) => Promise<void>
+  onDelete: (item: ActivityItem) => Promise<void>
 }): React.JSX.Element {
-  if (sessions.length === 0) {
-    return <div className="table-empty">暂无任务，创建第一个 Agent 任务后会显示在这里。</div>
+  if (items.length === 0) {
+    return <div className="table-empty">暂无任务，创建第一个 AI 任务后会显示在这里。</div>
   }
 
   return (
     <div className="task-table">
-      {sessions.map((session) => (
-        <div className="task-row" key={session.id}>
-          <button className="task-open" type="button" onClick={() => void onSelect(session.id)}>
-            <span className={`task-status-icon ${session.status}`}>
-              {session.status === 'running' ? '◌' :
-                session.status === 'completed' ? '✓' :
-                session.status === 'failed' ? '✕' :
+      {items.map((item) => (
+        <div className="task-row" key={item.key}>
+          <button className="task-open" type="button" onClick={() => void onSelect(item)}>
+            <span className={`task-status-icon ${item.status}`}>
+              {item.status === 'running' ? '◌' :
+                item.status === 'completed' ? '✓' :
+                item.status === 'failed' ? '✕' :
                 '○'}
             </span>
-            <span className="task-title"><strong>{session.title}</strong><small>{workspaceName(session.workspace)}</small></span>
-            <span className="task-agent">{session.agentId}</span>
-            <span className={`task-status ${session.status}`}>{statusLabel(session.status)}</span>
-            <time>{formatTime(session.updatedAt)}</time>
+            <span className="task-title"><strong>{item.title}</strong><small>{item.workspaceLabel}</small></span>
+            <span className="task-agent">{item.source}</span>
+            <span className={`task-status ${item.status}`}>{statusLabel(item.status)}</span>
+            <time>{formatTime(item.updatedAt)}</time>
             →
+          </button>
+          <button
+            className="task-delete"
+            type="button"
+            aria-label={`删除 ${item.title}`}
+            title={item.status === 'running' ? '请先停止任务' : '删除记录'}
+            disabled={item.status === 'running'}
+            onClick={() => void onDelete(item)}
+          >
+            <Trash2 aria-hidden="true" />
           </button>
         </div>
       ))}
     </div>
+  )
+}
+
+function TaskEventBody({ event }: { event: TaskEvent }): React.JSX.Element {
+  const call = event.type === 'capability_call' ? event.metadata?.call : undefined
+  const result = event.type === 'capability_result' ? event.metadata?.result : undefined
+  const modelInfo = event.type === 'model_message'
+    ? {
+        provider: event.metadata?.provider,
+        model: event.metadata?.model,
+        usage: event.metadata?.usage
+      }
+    : undefined
+  const details = call ?? result ?? modelInfo
+
+  return (
+    <>
+      <p>{event.text}</p>
+      {details && (
+        <details className="event-details">
+          <summary>
+            {call ? '查看调用参数' : result ? '查看执行结果' : '查看模型信息'}
+          </summary>
+          <pre>{JSON.stringify(details, null, 2)}</pre>
+        </details>
+      )}
+    </>
   )
 }
 

@@ -9,6 +9,8 @@ import { CapabilityRegistry } from './core/capability-registry'
 import { ModelOrchestrator } from './core/model-orchestrator'
 import { TaskManager } from './core/task-manager'
 import type {
+  CreateWorkspaceInput,
+  ContinueTaskInput,
   ContinueSessionInput,
   RenameSessionInput,
   SaveMcpServerInput,
@@ -50,6 +52,9 @@ function createWindow(): void {
     if (url.startsWith('https://')) void shell.openExternal(url)
     return { action: 'deny' }
   })
+  mainWindow.on('closed', () => {
+    mainWindow = null
+  })
 
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
     void mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
@@ -60,7 +65,19 @@ function createWindow(): void {
 
 app.setName('Kova')
 
-app.whenReady().then(async () => {
+const hasSingleInstanceLock = app.requestSingleInstanceLock()
+
+if (!hasSingleInstanceLock) {
+  app.quit()
+} else {
+  app.on('second-instance', () => {
+    if (!mainWindow || mainWindow.isDestroyed()) return
+    if (mainWindow.isMinimized()) mainWindow.restore()
+    mainWindow.show()
+    mainWindow.focus()
+  })
+
+  void app.whenReady().then(async () => {
   electronApp.setAppUserModelId('com.wiseailab.kova')
   if (process.platform === 'darwin') {
     const dockIcon = nativeImage.createFromPath(join(process.cwd(), 'resources/kova-icon.png'))
@@ -95,10 +112,14 @@ app.whenReady().then(async () => {
   })
   ipcMain.handle('capabilities:list', () => capabilityRegistry.list())
   ipcMain.handle('workspaces:list', () => store.listWorkspaces())
+  ipcMain.handle('workspaces:create', (_, input: CreateWorkspaceInput) => store.createWorkspace(input))
   ipcMain.handle('tasks:list', () => store.listTasks())
   ipcMain.handle('tasks:get', (_, taskId: string) => store.getTask(taskId))
   ipcMain.handle('tasks:start', (_, input: StartTaskInput) => taskManager.start(input))
+  ipcMain.handle('tasks:continue', (_, input: ContinueTaskInput) => taskManager.continue(input))
+  ipcMain.handle('tasks:retry', (_, taskId: string) => taskManager.retry(taskId))
   ipcMain.handle('tasks:cancel', (_, taskId: string) => taskManager.cancel(taskId))
+  ipcMain.handle('tasks:delete', (_, taskId: string) => taskManager.delete(taskId))
   ipcMain.handle('path:reveal', (_, path: string) => shell.showItemInFolder(path))
   ipcMain.handle('workflows:list', () => store.listWorkflowProfiles())
   ipcMain.handle('workflows:save', (_, input: SaveClaudeWorkflowProfileInput) => store.saveWorkflowProfile(input))
@@ -123,7 +144,8 @@ app.whenReady().then(async () => {
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
-})
+  })
+}
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') app.quit()

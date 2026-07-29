@@ -9,26 +9,70 @@ export interface ProcessResult {
 export function runProcess(
   command: string,
   args: string[],
-  options: { cwd?: string; signal?: AbortSignal } = {}
+  options: {
+    cwd?: string
+    signal?: AbortSignal
+    timeoutMs?: number
+    maxOutputBytes?: number
+  } = {}
 ): Promise<ProcessResult> {
   return new Promise((resolve, reject) => {
+    const controller = new AbortController()
+    const abortFromCaller = (): void => controller.abort(options.signal?.reason)
+    options.signal?.addEventListener('abort', abortFromCaller, { once: true })
+    if (options.signal?.aborted) abortFromCaller()
+    const timeout = options.timeoutMs
+      ? setTimeout(() => controller.abort(), options.timeoutMs)
+      : undefined
     const child = spawn(command, args, {
       cwd: options.cwd,
       env: process.env,
-      signal: options.signal,
+      signal: controller.signal,
       stdio: ['ignore', 'pipe', 'pipe']
     })
     let stdout = ''
     let stderr = ''
+    let settled = false
+
+    const cleanup = (): void => {
+      if (timeout) clearTimeout(timeout)
+      options.signal?.removeEventListener('abort', abortFromCaller)
+    }
+
+    const fail = (error: Error): void => {
+      if (settled) return
+      settled = true
+      cleanup()
+      reject(error)
+    }
 
     child.stdout.on('data', (chunk) => {
       stdout += chunk.toString()
+      if (options.maxOutputBytes && stdout.length + stderr.length > options.maxOutputBytes) {
+        controller.abort()
+        fail(new Error(`进程输出超过 ${options.maxOutputBytes} 字节限制`))
+      }
     })
     child.stderr.on('data', (chunk) => {
       stderr += chunk.toString()
+      if (options.maxOutputBytes && stdout.length + stderr.length > options.maxOutputBytes) {
+        controller.abort()
+        fail(new Error(`进程输出超过 ${options.maxOutputBytes} 字节限制`))
+      }
     })
-    child.on('error', reject)
-    child.on('close', (code) => resolve({ code, stdout, stderr }))
+    child.on('error', (error) => {
+      if (controller.signal.aborted && options.timeoutMs && !options.signal?.aborted) {
+        fail(new Error(`进程执行超时（${options.timeoutMs}ms）`))
+      } else {
+        fail(error)
+      }
+    })
+    child.on('close', (code) => {
+      if (settled) return
+      settled = true
+      cleanup()
+      resolve({ code, stdout, stderr })
+    })
   })
 }
 

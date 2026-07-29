@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 import type { BrowserWindow } from 'electron'
 import type {
+  ContinueTaskInput,
   StartTaskInput,
   Task,
   TaskEvent,
@@ -10,6 +11,7 @@ import type {
 } from '../../shared/contracts'
 import { SessionStore } from '../storage'
 import { ModelOrchestrator } from './model-orchestrator'
+import { CORE_TOOLS_PLUGIN_ID } from '../tools/native-tool-registry'
 
 interface RunningTask {
   task: Task
@@ -43,9 +45,12 @@ export class TaskManager {
       objective,
       workspaceId: workspace.id,
       modelProfileId: input.modelProfileId,
-      allowedPluginIds: input.allowedPluginIds?.length
-        ? [...new Set(input.allowedPluginIds)]
-        : ['com.kova.claude-code'],
+      allowedPluginIds: [
+        ...new Set([
+          CORE_TOOLS_PLUGIN_ID,
+          ...(input.allowedPluginIds ?? [])
+        ])
+      ],
       permissionMode: input.permissionMode,
       status: 'running',
       createdAt: now,
@@ -65,8 +70,28 @@ export class TaskManager {
     await this.emit(task, run, 'user_message', objective)
     const controller = new AbortController()
     this.running.set(task.id, { task, run, workspace, controller })
-    void this.execute(task, run, workspace, controller)
+    void this.execute(task, run, workspace, controller, objective)
     return task
+  }
+
+  async continue(input: ContinueTaskInput): Promise<Task> {
+    const prompt = input.prompt.trim()
+    if (!prompt) throw new Error('追加指令不能为空')
+    return this.startNextRun(input.taskId, 'resume', prompt, 'user_message')
+  }
+
+  async retry(taskId: string): Promise<Task> {
+    const details = await this.store.getTask(taskId)
+    if (!details) throw new Error('找不到对应任务')
+    if (details.task.status !== 'failed' && details.task.status !== 'cancelled') {
+      throw new Error('只有失败或已终止的任务可以重试')
+    }
+    return this.startNextRun(
+      taskId,
+      'retry',
+      '重新执行上一轮未完成的任务。请结合历史错误调整方案，并再次完成原始目标。',
+      'system'
+    )
   }
 
   async cancel(taskId: string): Promise<void> {
@@ -83,11 +108,53 @@ export class TaskManager {
     await this.emit(current.task, current.run, 'system', '任务已由用户停止')
   }
 
+  async delete(taskId: string): Promise<void> {
+    if (this.running.has(taskId)) throw new Error('请先停止正在运行的任务')
+    const details = await this.store.getTask(taskId)
+    if (!details) return
+    await this.store.deleteTask(taskId)
+  }
+
+  private async startNextRun(
+    taskId: string,
+    trigger: TaskRun['trigger'],
+    instruction: string,
+    eventType: TaskEventType
+  ): Promise<Task> {
+    if (this.running.has(taskId)) throw new Error('任务当前正在运行')
+    const details = await this.store.getTask(taskId)
+    if (!details) throw new Error('找不到对应任务')
+    if (!details.workspace) throw new Error('任务工作区不存在')
+
+    const now = new Date().toISOString()
+    const task = details.task
+    task.status = 'running'
+    task.updatedAt = now
+    task.completedAt = undefined
+    const run: TaskRun = {
+      id: randomUUID(),
+      taskId,
+      sequence: Math.max(0, ...details.runs.map((item) => item.sequence)) + 1,
+      trigger,
+      status: 'running',
+      startedAt: now
+    }
+
+    await this.store.saveTask(task)
+    await this.store.saveTaskRun(run)
+    await this.emit(task, run, eventType, instruction, { trigger })
+    const controller = new AbortController()
+    this.running.set(task.id, { task, run, workspace: details.workspace, controller })
+    void this.execute(task, run, details.workspace, controller, instruction)
+    return task
+  }
+
   private async execute(
     task: Task,
     run: TaskRun,
     workspace: Workspace,
-    controller: AbortController
+    controller: AbortController,
+    instruction: string
   ): Promise<void> {
     try {
       const result = await this.orchestrator.run(
@@ -95,7 +162,8 @@ export class TaskManager {
         run,
         workspace,
         controller.signal,
-        (type, text, metadata) => this.emit(task, run, type, text, metadata)
+        (type, text, metadata) => this.emit(task, run, type, text, metadata),
+        instruction
       )
       if (controller.signal.aborted) return
       const now = new Date().toISOString()

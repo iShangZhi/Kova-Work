@@ -1,6 +1,8 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type {
   AgentEvent,
+  CreateWorkspaceInput,
+  ContinueTaskInput,
   ContinueSessionInput,
   RenameSessionInput,
   SaveMcpServerInput,
@@ -32,10 +34,14 @@ const api: KovaApi = {
   chatWithModel: (input) => ipcRenderer.invoke('models:chat', input),
   listCapabilities: () => ipcRenderer.invoke('capabilities:list'),
   listWorkspaces: () => ipcRenderer.invoke('workspaces:list'),
+  createWorkspace: (input: CreateWorkspaceInput) => ipcRenderer.invoke('workspaces:create', input),
   listTasks: () => ipcRenderer.invoke('tasks:list'),
   getTask: (taskId: string) => ipcRenderer.invoke('tasks:get', taskId),
   startTask: (input: StartTaskInput) => ipcRenderer.invoke('tasks:start', input),
+  continueTask: (input: ContinueTaskInput) => ipcRenderer.invoke('tasks:continue', input),
+  retryTask: (taskId: string) => ipcRenderer.invoke('tasks:retry', taskId),
   cancelTask: (taskId: string) => ipcRenderer.invoke('tasks:cancel', taskId),
+  deleteTask: (taskId: string) => ipcRenderer.invoke('tasks:delete', taskId),
   onTaskEvent: (callback) => {
     const listener = (_event: Electron.IpcRendererEvent, taskEvent: TaskEvent): void => callback(taskEvent)
     ipcRenderer.on('task:event', listener)

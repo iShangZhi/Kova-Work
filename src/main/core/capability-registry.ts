@@ -7,6 +7,10 @@ import type {
   TaskEventType
 } from '../../shared/contracts'
 import { PluginManager } from '../plugins/plugin-manager'
+import {
+  CORE_TOOLS_PLUGIN_ID,
+  NativeToolRegistry
+} from '../tools/native-tool-registry'
 
 export interface CapabilityExecutionContext {
   workspace: string
@@ -106,24 +110,43 @@ const promptPrefixes: Record<string, string> = {
 }
 
 export class CapabilityRegistry {
-  constructor(private readonly plugins: PluginManager) {}
+  constructor(
+    private readonly plugins: PluginManager,
+    private readonly nativeTools = new NativeToolRegistry()
+  ) {}
 
   async list(): Promise<RegisteredCapability[]> {
     const scan = await this.plugins.scan()
     const plugin = scan.plugins.find((item) => item.id === 'com.kova.claude-code')
-    return claudeCapabilities.map((capability) => ({
-      ...capability,
-      pluginId: 'com.kova.claude-code',
-      pluginName: 'Claude Code',
-      available: plugin?.available ?? false,
-      statusMessage: plugin?.statusMessage ?? 'Claude Code 插件未注册'
-    }))
+    return [
+      ...this.nativeTools.list(),
+      ...claudeCapabilities.map((capability) => ({
+        ...capability,
+        pluginId: 'com.kova.claude-code',
+        pluginName: 'Claude Code',
+        available: plugin?.available ?? false,
+        statusMessage: plugin?.statusMessage ?? 'Claude Code 插件未注册'
+      }))
+    ]
   }
 
   async execute(
     call: CapabilityCall,
     context: CapabilityExecutionContext
   ): Promise<CapabilityResult> {
+    if (call.pluginId === CORE_TOOLS_PLUGIN_ID) {
+      const output = await this.nativeTools.execute(call, {
+        workspace: context.workspace,
+        signal: context.signal
+      })
+      return {
+        callId: call.id,
+        status: 'completed',
+        output,
+        artifactIds: []
+      }
+    }
+
     const capability = claudeCapabilities.find((item) => item.id === call.capabilityId)
     if (call.pluginId !== 'com.kova.claude-code' || !capability) {
       throw new Error(`未注册的能力：${call.pluginId}/${call.capabilityId}`)
