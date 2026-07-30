@@ -95,6 +95,25 @@ export class SessionStore {
     this.state.taskRuns ??= []
     this.state.taskEvents ??= []
     this.state.artifacts ??= []
+    const enabledModels = this.state.modelProfiles.filter((profile) => profile.enabled)
+    const fallbackModel = enabledModels[0]
+    if (fallbackModel) {
+      const enabledModelIds = new Set(enabledModels.map((profile) => profile.id))
+      for (const workspace of this.state.workspaces) {
+        if (!workspace.defaultModelProfileId || !enabledModelIds.has(workspace.defaultModelProfileId)) {
+          workspace.defaultModelProfileId = fallbackModel.id
+          workspace.updatedAt = new Date().toISOString()
+          stateChanged = true
+        }
+      }
+      for (const task of this.state.tasks) {
+        if (!enabledModelIds.has(task.modelProfileId)) {
+          task.modelProfileId = fallbackModel.id
+          task.updatedAt = new Date().toISOString()
+          stateChanged = true
+        }
+      }
+    }
     if (stateChanged) await this.flush()
   }
 
@@ -267,9 +286,28 @@ export class SessionStore {
       throw new Error('模型请求超时必须在 1 秒到 30 分钟之间')
     }
     const now = new Date().toISOString()
-    const profile: ModelProfile = { id: randomUUID(), name: input.name.trim(), provider: input.provider ?? 'openai-compatible', baseUrl: input.baseUrl.trim().replace(/\/$/, ''), model: input.model.trim(), apiKey: input.apiKey?.trim() || undefined, systemPrompt: input.systemPrompt?.trim() || undefined, temperature: input.temperature, requestTimeoutMs: input.requestTimeoutMs, enabled: true, createdAt: now, updatedAt: now }
     this.state.modelProfiles ??= []
-    this.state.modelProfiles.push(profile)
+    const existing = input.id
+      ? this.state.modelProfiles.find((profile) => profile.id === input.id)
+      : undefined
+    if (input.id && !existing) throw new Error('找不到要编辑的模型配置')
+    const profile: ModelProfile = {
+      id: existing?.id ?? randomUUID(),
+      name: input.name.trim(),
+      provider: input.provider ?? existing?.provider ?? 'openai-compatible',
+      baseUrl: input.baseUrl.trim().replace(/\/$/, ''),
+      model: input.model.trim(),
+      apiKey: input.apiKey?.trim() || existing?.apiKey,
+      systemPrompt: input.systemPrompt?.trim() || undefined,
+      temperature: input.temperature,
+      requestTimeoutMs: input.requestTimeoutMs,
+      enabled: input.enabled ?? existing?.enabled ?? true,
+      createdAt: existing?.createdAt ?? now,
+      updatedAt: now
+    }
+    const index = this.state.modelProfiles.findIndex((item) => item.id === profile.id)
+    if (index >= 0) this.state.modelProfiles[index] = profile
+    else this.state.modelProfiles.push(profile)
     await this.flush()
     return profile
   }
@@ -277,6 +315,15 @@ export class SessionStore {
   async deleteModelProfile(id: string): Promise<void> {
     await this.load()
     this.state.modelProfiles = (this.state.modelProfiles ?? []).filter((profile) => profile.id !== id)
+    const fallback = this.state.modelProfiles.find((profile) => profile.enabled)
+    if (fallback) {
+      for (const workspace of this.state.workspaces ?? []) {
+        if (workspace.defaultModelProfileId === id) workspace.defaultModelProfileId = fallback.id
+      }
+      for (const task of this.state.tasks ?? []) {
+        if (task.modelProfileId === id) task.modelProfileId = fallback.id
+      }
+    }
     await this.flush()
   }
 

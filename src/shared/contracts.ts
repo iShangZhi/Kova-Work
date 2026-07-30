@@ -180,6 +180,7 @@ export interface ModelProfile {
 }
 
 export interface SaveModelProfileInput {
+  id?: string
   name: string
   provider?: ModelProviderId
   baseUrl: string
@@ -188,6 +189,7 @@ export interface SaveModelProfileInput {
   systemPrompt?: string
   temperature?: number
   requestTimeoutMs?: number
+  enabled?: boolean
 }
 
 export interface ModelChatInput {

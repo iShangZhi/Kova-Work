@@ -128,6 +128,14 @@ export class TaskManager {
 
     const now = new Date().toISOString()
     const task = details.task
+    const previousModelProfileId = task.modelProfileId
+    const models = (await this.store.listModelProfiles()).filter((model) => model.enabled)
+    if (!models.some((model) => model.id === task.modelProfileId)) {
+      const fallback = models.find((model) => model.id === details.workspace?.defaultModelProfileId) ?? models[0]
+      if (!fallback) throw new Error('没有可用的模型配置，请先在设置中添加并启用模型')
+      task.modelProfileId = fallback.id
+      details.workspace = await this.store.ensureWorkspace(details.workspace.path, fallback.id)
+    }
     task.status = 'running'
     task.updatedAt = now
     task.completedAt = undefined
@@ -142,6 +150,9 @@ export class TaskManager {
 
     await this.store.saveTask(task)
     await this.store.saveTaskRun(run)
+    if (previousModelProfileId !== task.modelProfileId) {
+      await this.emit(task, run, 'system', '原模型配置已不可用，任务已自动切换到当前默认模型。')
+    }
     await this.emit(task, run, eventType, instruction, { trigger })
     const controller = new AbortController()
     this.running.set(task.id, { task, run, workspace: details.workspace, controller })

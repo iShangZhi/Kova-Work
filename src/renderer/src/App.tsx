@@ -1,11 +1,20 @@
 import { useEffect, useMemo, useState } from 'react'
+import ReactMarkdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 import {
+  ArrowLeft,
   ChevronRight,
   CirclePlus,
+  Cpu,
   Folder,
+  FolderOpen,
   FolderPlus,
+  Pin,
+  Search,
   Settings,
+  ShieldCheck,
   SquarePen,
+  SunMoon,
   Trash2,
   X
 } from 'lucide-react'
@@ -26,6 +35,7 @@ import packageInfo from '../../../package.json'
 
 type ViewId = 'today' | 'projects' | 'tasks' | 'agents' | 'plugins' | 'settings'
 type ThemeMode = 'dark' | 'light'
+type SettingsSectionId = 'general' | 'models' | 'appearance'
 type TaskFilter = 'all' | 'running' | 'completed' | 'failed'
 type ActivityStatus = TaskStatus
 
@@ -101,7 +111,15 @@ export function App(): React.JSX.Element {
   const [workspaces, setWorkspaces] = useState<Workspace[]>([])
   const [capabilities, setCapabilities] = useState<RegisteredCapability[]>([])
   const [workspace, setWorkspace] = useState('')
-  const [permissionMode, setPermissionMode] = useState<PermissionMode>('acceptEdits')
+  const [defaultPermissionMode, setDefaultPermissionMode] = useState<PermissionMode>(
+    () => (localStorage.getItem('kova-default-permission') as PermissionMode | null) ?? 'acceptEdits'
+  )
+  const [permissionMode, setPermissionMode] = useState<PermissionMode>(
+    () => (localStorage.getItem('kova-default-permission') as PermissionMode | null) ?? 'acceptEdits'
+  )
+  const [defaultModelProfileId, setDefaultModelProfileId] = useState(
+    () => localStorage.getItem('kova-default-model') ?? ''
+  )
   const [modelProfileId, setModelProfileId] = useState('')
   const [prompt, setPrompt] = useState('')
   const [error, setError] = useState('')
@@ -172,6 +190,15 @@ export function App(): React.JSX.Element {
   }, [themeMode])
 
   useEffect(() => {
+    localStorage.setItem('kova-default-permission', defaultPermissionMode)
+  }, [defaultPermissionMode])
+
+  useEffect(() => {
+    if (defaultModelProfileId) localStorage.setItem('kova-default-model', defaultModelProfileId)
+    else localStorage.removeItem('kova-default-model')
+  }, [defaultModelProfileId])
+
+  useEffect(() => {
     void Promise.all([
       window.kova.listAgents(),
       window.kova.listPlugins(),
@@ -189,11 +216,13 @@ export function App(): React.JSX.Element {
         setWorkspaces(workspaceItems)
         setCapabilities(capabilityItems)
         const projectDefault = workspaceItems.find((item) => item.path === workspace)?.defaultModelProfileId
+        const savedDefault = modelItems.find((item) => item.id === defaultModelProfileId)?.id
         setModelProfileId(
           projectDefault && modelItems.some((item) => item.id === projectDefault)
             ? projectDefault
-            : modelItems[0]?.id ?? ''
+            : savedDefault ?? modelItems[0]?.id ?? ''
         )
+        if (!savedDefault && modelItems[0]) setDefaultModelProfileId(modelItems[0].id)
       }
     ).catch((cause) => setError(`初始化失败：${cause instanceof Error ? cause.message : String(cause)}`))
 
@@ -331,7 +360,7 @@ export function App(): React.JSX.Element {
 
   function newSession(): void {
     setActiveTask(null)
-    setPermissionMode('acceptEdits')
+    setPermissionMode(defaultPermissionMode)
     setPrompt('')
     setError('')
     setView('agents')
@@ -423,6 +452,39 @@ export function App(): React.JSX.Element {
   const isRunning = activeTask?.task.status === 'running'
   const isActiveTaskRunning = activeTask?.task.status === 'running'
 
+  if (view === 'settings') {
+    return (
+      <SettingsView
+        models={modelProfiles}
+        defaultModelProfileId={defaultModelProfileId}
+        themeMode={themeMode}
+        defaultPermissionMode={defaultPermissionMode}
+        onBack={() => setView('agents')}
+        onThemeChange={setThemeMode}
+        onDefaultPermissionChange={setDefaultPermissionMode}
+        onDefaultModelChange={(id) => {
+          setDefaultModelProfileId(id)
+          setModelProfileId(id)
+        }}
+        onModelSaved={(model) => {
+          setModelProfiles((current) => {
+            const exists = current.some((item) => item.id === model.id)
+            return exists
+              ? current.map((item) => item.id === model.id ? model : item)
+              : [model, ...current]
+          })
+          setModelProfileId((current) => current || model.id)
+          setDefaultModelProfileId((current) => current || model.id)
+        }}
+        onModelDeleted={(id) => {
+          setModelProfiles((current) => current.filter((item) => item.id !== id))
+          if (modelProfileId === id) setModelProfileId('')
+          if (defaultModelProfileId === id) setDefaultModelProfileId('')
+        }}
+      />
+    )
+  }
+
   return (
     <div className="app-shell">
       <aside className="sidebar">
@@ -504,6 +566,18 @@ export function App(): React.JSX.Element {
                       ))}
                     </div>
                   )}
+                  <div className="project-hover-card" role="tooltip">
+                    <div className="project-hover-title">
+                      <span><Folder aria-hidden="true" /><strong>{project.name}</strong></span>
+                      <Pin aria-hidden="true" />
+                    </div>
+                    <p>{project.items.length} 个任务 · {project.items.filter((item) => item.status === 'failed' || item.status === 'waiting').length} 个待处理</p>
+                    <div className="project-hover-path"><FolderOpen aria-hidden="true" /><span>{project.path}</span></div>
+                    <button type="button" onClick={() => openProject(project.path)}>
+                      <CirclePlus aria-hidden="true" />
+                      <span>在项目中新建任务</span>
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>
@@ -552,7 +626,7 @@ export function App(): React.JSX.Element {
           )}
         </section>
         <button
-          className={`sidebar-action ${view === 'settings' ? 'active' : ''}`}
+          className="sidebar-action"
           type="button"
           onClick={() => setView('settings')}
         >
@@ -828,32 +902,6 @@ export function App(): React.JSX.Element {
           </main>
         )}
 
-        {view === 'settings' && (
-          <main className="page-main settings-page">
-            <div className="page-header"><div><h1>设置</h1></div></div>
-            <ModelSettings
-              models={modelProfiles}
-              onSaved={(model) => {
-                setModelProfiles((current) => [model, ...current])
-                setModelProfileId((current) => current || model.id)
-              }}
-              onDeleted={(id) => {
-                setModelProfiles((current) => current.filter((item) => item.id !== id))
-                if (modelProfileId === id) setModelProfileId('')
-              }}
-            />
-            <section className="panel settings-section">
-              <div><h2>外观</h2></div>
-              <div className="setting-row">
-                <div><strong>显示模式</strong></div>
-                <div className="segmented-control">
-                  <button className={themeMode === 'dark' ? 'active' : ''} type="button" onClick={() => setThemeMode('dark')}>深色</button>
-                  <button className={themeMode === 'light' ? 'active' : ''} type="button" onClick={() => setThemeMode('light')}>浅色</button>
-                </div>
-              </div>
-            </section>
-          </main>
-        )}
       </section>
       {showCreateProject && (
         <div className="modal-backdrop" role="presentation" onMouseDown={(event) => {
@@ -928,56 +976,337 @@ function PageHeader({
   )
 }
 
-function ModelSettings({ models, onSaved, onDeleted }: { models: ModelProfile[]; onSaved: (model: ModelProfile) => void; onDeleted: (id: string) => void }): React.JSX.Element {
+function SettingsView({
+  models,
+  defaultModelProfileId,
+  themeMode,
+  defaultPermissionMode,
+  onBack,
+  onThemeChange,
+  onDefaultPermissionChange,
+  onDefaultModelChange,
+  onModelSaved,
+  onModelDeleted
+}: {
+  models: ModelProfile[]
+  defaultModelProfileId: string
+  themeMode: ThemeMode
+  defaultPermissionMode: PermissionMode
+  onBack: () => void
+  onThemeChange: (theme: ThemeMode) => void
+  onDefaultPermissionChange: (mode: PermissionMode) => void
+  onDefaultModelChange: (id: string) => void
+  onModelSaved: (model: ModelProfile) => void
+  onModelDeleted: (id: string) => void
+}): React.JSX.Element {
+  const [section, setSection] = useState<SettingsSectionId>('general')
+  const [query, setQuery] = useState('')
+  const sections: Array<{
+    id: SettingsSectionId
+    label: string
+    keywords: string
+    icon: typeof ShieldCheck
+  }> = [
+    { id: 'general', label: '常规', keywords: '常规 权限 默认 permission', icon: ShieldCheck },
+    { id: 'models', label: '模型', keywords: '模型 deepseek api key', icon: Cpu },
+    { id: 'appearance', label: '外观', keywords: '外观 深色 浅色 主题', icon: SunMoon }
+  ]
+  const normalizedQuery = query.trim().toLowerCase()
+  const visibleSections = normalizedQuery
+    ? sections.filter((item) => `${item.label} ${item.keywords}`.toLowerCase().includes(normalizedQuery))
+    : sections
+  const currentTitle = sections.find((item) => item.id === section)?.label ?? '常规'
+
+  return (
+    <div className="settings-workspace">
+      <aside className="settings-sidebar">
+        <div className="settings-window-drag" />
+        <button className="settings-back" type="button" onClick={onBack}>
+          <ArrowLeft aria-hidden="true" />
+          <span>返回应用</span>
+        </button>
+        <label className="settings-search">
+          <Search aria-hidden="true" />
+          <input
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            placeholder="搜索设置…"
+            aria-label="搜索设置"
+          />
+        </label>
+        <span className="settings-nav-label">设置</span>
+        <nav className="settings-nav">
+          {visibleSections.map((item) => {
+            const Icon = item.icon
+            return (
+              <button
+                className={section === item.id ? 'active' : ''}
+                type="button"
+                key={item.id}
+                onClick={() => setSection(item.id)}
+              >
+                <Icon aria-hidden="true" />
+                <span>{item.label}</span>
+              </button>
+            )
+          })}
+          {visibleSections.length === 0 && <p>没有匹配的设置</p>}
+        </nav>
+        <span className="settings-version">Kova v{packageInfo.version}</span>
+      </aside>
+
+      <main className="settings-detail">
+        <div className="settings-detail-inner">
+          <h1>{currentTitle}</h1>
+
+          {section === 'general' && (
+            <>
+              <h2>权限</h2>
+              <section className="settings-card permission-settings" role="radiogroup" aria-label="默认任务权限">
+                {([
+                  ['acceptEdits', '默认权限', '允许模型读取并编辑当前项目中的文件。'],
+                  ['dontAsk', '严格模式', '无法确认的写入和命令将被拒绝。'],
+                  ['plan', '只读模式', '只允许分析、读取和检查项目。']
+                ] as Array<[PermissionMode, string, string]>).map(([mode, title, description]) => (
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={defaultPermissionMode === mode}
+                    className={defaultPermissionMode === mode ? 'active' : ''}
+                    key={mode}
+                    onClick={() => onDefaultPermissionChange(mode)}
+                  >
+                    <span><strong>{title}</strong><small>{description}</small></span>
+                    <i aria-hidden="true" />
+                  </button>
+                ))}
+              </section>
+            </>
+          )}
+
+          {section === 'models' && (
+            <ModelSettings
+              models={models}
+              defaultModelProfileId={defaultModelProfileId}
+              onDefaultChange={onDefaultModelChange}
+              onSaved={onModelSaved}
+              onDeleted={onModelDeleted}
+            />
+          )}
+
+          {section === 'appearance' && (
+            <>
+              <h2>主题</h2>
+              <section className="settings-card">
+                <div className="settings-control-row">
+                  <span><strong>显示模式</strong><small>选择 Kova 的界面外观。</small></span>
+                  <div className="segmented-control">
+                    <button className={themeMode === 'dark' ? 'active' : ''} type="button" onClick={() => onThemeChange('dark')}>深色</button>
+                    <button className={themeMode === 'light' ? 'active' : ''} type="button" onClick={() => onThemeChange('light')}>浅色</button>
+                  </div>
+                </div>
+              </section>
+            </>
+          )}
+        </div>
+      </main>
+    </div>
+  )
+}
+
+function ModelSettings({
+  models,
+  defaultModelProfileId,
+  onDefaultChange,
+  onSaved,
+  onDeleted
+}: {
+  models: ModelProfile[]
+  defaultModelProfileId: string
+  onDefaultChange: (id: string) => void
+  onSaved: (model: ModelProfile) => void
+  onDeleted: (id: string) => void
+}): React.JSX.Element {
+  const [editingId, setEditingId] = useState<string | null>(null)
+  const [showForm, setShowForm] = useState(models.length === 0)
   const [name, setName] = useState('')
   const [baseUrl, setBaseUrl] = useState('https://api.deepseek.com')
   const [model, setModel] = useState('')
   const [apiKey, setApiKey] = useState('')
+  const [systemPrompt, setSystemPrompt] = useState('')
+  const [temperature, setTemperature] = useState('0.2')
+  const [timeoutSeconds, setTimeoutSeconds] = useState('120')
+  const [enabled, setEnabled] = useState(true)
   const [error, setError] = useState('')
+  const [testingId, setTestingId] = useState<string | null>(null)
+  const [testResults, setTestResults] = useState<Record<string, { ok: boolean; text: string }>>({})
+
+  function resetForm(): void {
+    setEditingId(null)
+    setName('')
+    setBaseUrl('https://api.deepseek.com')
+    setModel('')
+    setApiKey('')
+    setSystemPrompt('')
+    setTemperature('0.2')
+    setTimeoutSeconds('120')
+    setEnabled(true)
+    setError('')
+  }
+
+  function addModel(): void {
+    resetForm()
+    setShowForm(true)
+  }
+
+  function editModel(profile: ModelProfile): void {
+    setEditingId(profile.id)
+    setName(profile.name)
+    setBaseUrl(profile.baseUrl)
+    setModel(profile.model)
+    setApiKey('')
+    setSystemPrompt(profile.systemPrompt ?? '')
+    setTemperature(String(profile.temperature ?? 0.2))
+    setTimeoutSeconds(String(Math.round((profile.requestTimeoutMs ?? 120_000) / 1_000)))
+    setEnabled(profile.enabled)
+    setError('')
+    setShowForm(true)
+  }
 
   async function save(event: React.FormEvent): Promise<void> {
     event.preventDefault()
     setError('')
     try {
-      const saved = await window.kova.saveModelProfile({ name, baseUrl, model, apiKey, temperature: 0.2 })
+      const timeout = Number(timeoutSeconds)
+      const nextTemperature = Number(temperature)
+      if (!Number.isFinite(timeout) || timeout < 1 || timeout > 1_800) {
+        throw new Error('请求超时必须在 1 到 1800 秒之间')
+      }
+      if (!Number.isFinite(nextTemperature) || nextTemperature < 0 || nextTemperature > 2) {
+        throw new Error('温度必须在 0 到 2 之间')
+      }
+      const saved = await window.kova.saveModelProfile({
+        id: editingId ?? undefined,
+        name,
+        baseUrl,
+        model,
+        apiKey,
+        systemPrompt,
+        temperature: nextTemperature,
+        requestTimeoutMs: timeout * 1_000,
+        enabled
+      })
       onSaved(saved)
-      setName(''); setModel(''); setApiKey('')
+      resetForm()
+      setShowForm(false)
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause))
     }
   }
 
+  async function testModel(profile: ModelProfile): Promise<void> {
+    setTestingId(profile.id)
+    setTestResults((current) => {
+      const next = { ...current }
+      delete next[profile.id]
+      return next
+    })
+    try {
+      await window.kova.chatWithModel({
+        profileId: profile.id,
+        messages: [{ role: 'user', content: '请只回复 OK' }]
+      })
+      setTestResults((current) => ({ ...current, [profile.id]: { ok: true, text: '连接成功' } }))
+    } catch (cause) {
+      setTestResults((current) => ({
+        ...current,
+        [profile.id]: {
+          ok: false,
+          text: cause instanceof Error ? cause.message : String(cause)
+        }
+      }))
+    } finally {
+      setTestingId(null)
+    }
+  }
+
   return (
-    <section className="panel settings-section">
-      <div><h2>模型</h2><p>配置用于执行任务的第三方模型。</p></div>
-      <div className="config-list">
+    <>
+      <div className="settings-section-title">
+        <h2>模型配置</h2>
+        <button type="button" onClick={addModel}>添加模型</button>
+      </div>
+      <section className="model-profile-list">
         {models.length === 0 && <p className="settings-empty">还没有模型配置。</p>}
         {models.map((item) => (
-          <div key={item.id}>
-            <span><strong>{item.name}</strong><small>{item.model} · {item.baseUrl}</small></span>
-            <button
-              className="delete-button"
-              type="button"
-              onClick={() => {
-                if (window.confirm(`确定删除模型配置“${item.name}”吗？`)) {
-                  void window.kova.deleteModelProfile(item.id).then(() => onDeleted(item.id))
-                }
-              }}
-            >
-              删除
-            </button>
-          </div>
+          <article className="settings-card model-profile-card" key={item.id}>
+            <div className="model-profile-main">
+              <span>
+                <strong>{item.name}</strong>
+                <small>{item.model} · {item.baseUrl}</small>
+              </span>
+              <div className="model-badges">
+                {defaultModelProfileId === item.id && <em className="default">默认</em>}
+                <em className={item.enabled ? 'enabled' : ''}>{item.enabled ? '已启用' : '已停用'}</em>
+              </div>
+            </div>
+            {testResults[item.id] && (
+              <p className={`model-test-result ${testResults[item.id].ok ? 'success' : 'failed'}`}>
+                {testResults[item.id].text}
+              </p>
+            )}
+            <div className="model-profile-actions">
+              {defaultModelProfileId !== item.id && (
+                <button type="button" onClick={() => onDefaultChange(item.id)}>设为默认</button>
+              )}
+              <button type="button" disabled={testingId === item.id || !item.enabled} onClick={() => void testModel(item)}>
+                {testingId === item.id ? '测试中…' : '测试连接'}
+              </button>
+              <button type="button" onClick={() => editModel(item)}>编辑</button>
+              <button
+                className="danger"
+                type="button"
+                onClick={() => {
+                  if (window.confirm(`确定删除模型配置“${item.name}”吗？`)) {
+                    void window.kova.deleteModelProfile(item.id).then(() => onDeleted(item.id))
+                  }
+                }}
+              >
+                删除
+              </button>
+            </div>
+          </article>
         ))}
-      </div>
-      <form className="settings-form" onSubmit={(event) => void save(event)}>
-        <input value={name} onChange={(event) => setName(event.target.value)} placeholder="配置名称"/>
-        <input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="API 地址"/>
-        <input value={model} onChange={(event) => setModel(event.target.value)} placeholder="模型 ID"/>
-        <input value={apiKey} type="password" onChange={(event) => setApiKey(event.target.value)} placeholder="API Key（仅保存在本机）"/>
-        {error && <p className="form-error">{error}</p>}
-        <button className="primary-button" type="submit">添加模型</button>
-      </form>
-    </section>
+      </section>
+      {showForm && (
+        <>
+          <h2>{editingId ? '编辑模型' : '添加模型'}</h2>
+          <form className="settings-card model-editor" onSubmit={(event) => void save(event)}>
+            <label><span>配置名称</span><input value={name} onChange={(event) => setName(event.target.value)} placeholder="例如：DeepSeek"/></label>
+            <label><span>API 地址</span><input value={baseUrl} onChange={(event) => setBaseUrl(event.target.value)} placeholder="https://api.deepseek.com"/></label>
+            <label><span>模型 ID</span><input value={model} onChange={(event) => setModel(event.target.value)} placeholder="模型 ID"/></label>
+            <label>
+              <span>API Key</span>
+              <input
+                value={apiKey}
+                type="password"
+                onChange={(event) => setApiKey(event.target.value)}
+                placeholder={editingId ? '留空则保留现有密钥' : '输入 API Key'}
+              />
+            </label>
+            <label><span>温度</span><input value={temperature} type="number" min="0" max="2" step="0.1" onChange={(event) => setTemperature(event.target.value)}/></label>
+            <label><span>请求超时（秒）</span><input value={timeoutSeconds} type="number" min="1" max="1800" onChange={(event) => setTimeoutSeconds(event.target.value)}/></label>
+            <label className="model-system-prompt"><span>系统提示词</span><textarea value={systemPrompt} rows={3} onChange={(event) => setSystemPrompt(event.target.value)} placeholder="可选"/></label>
+            <label className="model-enabled"><input type="checkbox" checked={enabled} onChange={(event) => setEnabled(event.target.checked)}/><span>启用此模型</span></label>
+            {error && <p className="form-error">{error}</p>}
+            <div className="model-editor-actions">
+              <button type="button" onClick={() => { resetForm(); setShowForm(false) }}>取消</button>
+              <button className="primary-button" type="submit">{editingId ? '保存修改' : '添加模型'}</button>
+            </div>
+          </form>
+        </>
+      )}
+    </>
   )
 }
 
@@ -1051,7 +1380,13 @@ function TaskEventBody({ event }: { event: TaskEvent }): React.JSX.Element {
 
   return (
     <>
-      <p>{event.text}</p>
+      {event.type === 'model_message' ? (
+        <div className="event-markdown">
+          <ReactMarkdown remarkPlugins={[remarkGfm]}>{event.text}</ReactMarkdown>
+        </div>
+      ) : (
+        <p>{event.type === 'completed' ? '任务已完成' : event.text}</p>
+      )}
       {details && (
         <details className="event-details">
           <summary>

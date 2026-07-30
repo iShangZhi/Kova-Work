@@ -90,6 +90,7 @@ export class ModelOrchestrator {
         content: [
           profile.systemPrompt,
           '你是 Kova 个人工作台的任务编排器。',
+          `当前实际模型为 ${profile.provider} / ${profile.model}；涉及模型身份时以此配置为准，不要沿用历史消息中的身份声明。`,
           registered.length
             ? '根据用户目标选择必要的能力执行，不要声称执行了尚未调用的工具。'
             : '当前没有可用的本地工具。请直接回答能够完成的部分，并明确说明无法实际执行的操作。',
