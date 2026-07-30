@@ -48,7 +48,7 @@ export class TaskManager {
       allowedPluginIds: [
         ...new Set([
           CORE_TOOLS_PLUGIN_ID,
-          ...(input.allowedPluginIds ?? [])
+          ...(input.allowedPluginIds ?? workspace.enabledPluginIds)
         ])
       ],
       permissionMode: input.permissionMode,

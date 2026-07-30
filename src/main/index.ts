@@ -19,12 +19,13 @@ import type {
   UpdateMcpServerInput,
   SaveClaudeWorkflowProfileInput,
   StartSessionInput,
-  StartTaskInput
+  StartTaskInput,
+  UpdateWorkspaceInput
 } from '../shared/contracts'
 
 let mainWindow: BrowserWindow | null = null
 const store = new SessionStore()
-const pluginManager = new PluginManager()
+const pluginManager = new PluginManager(store)
 const sessionManager = new SessionManager(store, pluginManager, () => mainWindow)
 const capabilityRegistry = new CapabilityRegistry(pluginManager)
 const modelOrchestrator = new ModelOrchestrator(store, capabilityRegistry)
@@ -90,6 +91,7 @@ if (!hasSingleInstanceLock) {
   ipcMain.handle('agents:list', () => pluginManager.listAgents())
   ipcMain.handle('plugins:list', () => pluginManager.scan())
   ipcMain.handle('plugins:rescan', () => pluginManager.scan(true))
+  ipcMain.handle('plugins:set-enabled', (_, id: string, enabled: boolean) => pluginManager.setEnabled(id, enabled))
   ipcMain.handle('mcp:list', () => store.listMcpServers())
   ipcMain.handle('mcp:save', (_, input: SaveMcpServerInput) => store.saveMcpServer(input))
   ipcMain.handle('mcp:update', (_, input: UpdateMcpServerInput) => store.updateMcpServer(input))
@@ -113,6 +115,7 @@ if (!hasSingleInstanceLock) {
   ipcMain.handle('capabilities:list', () => capabilityRegistry.list())
   ipcMain.handle('workspaces:list', () => store.listWorkspaces())
   ipcMain.handle('workspaces:create', (_, input: CreateWorkspaceInput) => store.createWorkspace(input))
+  ipcMain.handle('workspaces:update', (_, input: UpdateWorkspaceInput) => store.updateWorkspace(input))
   ipcMain.handle('tasks:list', () => store.listTasks())
   ipcMain.handle('tasks:get', (_, taskId: string) => store.getTask(taskId))
   ipcMain.handle('tasks:start', (_, input: StartTaskInput) => taskManager.start(input))

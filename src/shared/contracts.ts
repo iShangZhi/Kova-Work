@@ -5,7 +5,7 @@ export type WorkflowStage = 'design' | 'development' | 'testing'
 
 export type SessionStatus = 'idle' | 'running' | 'completed' | 'failed' | 'cancelled'
 
-export type PluginStatus = 'ready' | 'detected' | 'missing' | 'error'
+export type PluginStatus = 'ready' | 'detected' | 'missing' | 'disabled' | 'error'
 
 export type PluginCapability =
   | 'agent.chat'
@@ -62,6 +62,7 @@ export interface PluginDefinition {
     network: boolean
   }
   agentId: AgentId
+  enabled: boolean
   available: boolean
 }
 
@@ -244,6 +245,10 @@ export interface Workspace {
   name: string
   path: string
   sourceFolders?: string[]
+  icon?: string
+  color?: string
+  pinned?: boolean
+  removedAt?: string
   defaultModelProfileId?: string
   enabledPluginIds: string[]
   createdAt: string
@@ -254,6 +259,17 @@ export interface CreateWorkspaceInput {
   name: string
   sourceFolders: string[]
   defaultModelProfileId?: string
+}
+
+export interface UpdateWorkspaceInput {
+  id: string
+  name?: string
+  sourceFolders?: string[]
+  icon?: string
+  color?: string
+  pinned?: boolean
+  removed?: boolean
+  enabledPluginIds?: string[]
 }
 
 export interface Task {
@@ -406,6 +422,7 @@ export interface KovaApi {
   listAgents(): Promise<AgentDefinition[]>
   listPlugins(): Promise<PluginScanResult>
   rescanPlugins(): Promise<PluginScanResult>
+  setPluginEnabled(id: string, enabled: boolean): Promise<PluginScanResult>
   listMcpServers(): Promise<McpServerDefinition[]>
   saveMcpServer(input: SaveMcpServerInput): Promise<McpServerDefinition>
   updateMcpServer(input: UpdateMcpServerInput): Promise<McpServerDefinition>
@@ -422,6 +439,7 @@ export interface KovaApi {
   listCapabilities(): Promise<RegisteredCapability[]>
   listWorkspaces(): Promise<Workspace[]>
   createWorkspace(input: CreateWorkspaceInput): Promise<Workspace>
+  updateWorkspace(input: UpdateWorkspaceInput): Promise<Workspace>
   listTasks(): Promise<Task[]>
   getTask(taskId: string): Promise<TaskWithDetails | null>
   startTask(input: StartTaskInput): Promise<Task>

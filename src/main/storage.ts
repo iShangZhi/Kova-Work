@@ -2,7 +2,7 @@ import { app } from 'electron'
 import { mkdir, readFile, realpath, rename, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
-import type { AgentEvent, AgentSession, Artifact, ClaudeWorkflowProfile, CreateWorkspaceInput, McpServerDefinition, ModelProfile, SaveClaudeWorkflowProfileInput, SaveMcpServerInput, SaveModelProfileInput, SessionWithEvents, SkillDefinition, Task, TaskEvent, TaskRun, TaskWithDetails, UpdateMcpServerInput, Workspace } from '../shared/contracts'
+import type { AgentEvent, AgentSession, Artifact, ClaudeWorkflowProfile, CreateWorkspaceInput, McpServerDefinition, ModelProfile, SaveClaudeWorkflowProfileInput, SaveMcpServerInput, SaveModelProfileInput, SessionWithEvents, SkillDefinition, Task, TaskEvent, TaskRun, TaskWithDetails, UpdateMcpServerInput, UpdateWorkspaceInput, Workspace } from '../shared/contracts'
 import { CORE_TOOLS_PLUGIN_ID } from './tools/native-tool-registry'
 
 interface PersistedState {
@@ -17,6 +17,7 @@ interface PersistedState {
   taskRuns?: TaskRun[]
   taskEvents?: TaskEvent[]
   artifacts?: Artifact[]
+  pluginEnabled?: Record<string, boolean>
   legacyImported?: boolean
 }
 
@@ -32,6 +33,7 @@ const emptyState = (): PersistedState => ({
   taskRuns: [],
   taskEvents: [],
   artifacts: [],
+  pluginEnabled: {},
   legacyImported: false
 })
 
@@ -95,6 +97,7 @@ export class SessionStore {
     this.state.taskRuns ??= []
     this.state.taskEvents ??= []
     this.state.artifacts ??= []
+    this.state.pluginEnabled ??= {}
     const enabledModels = this.state.modelProfiles.filter((profile) => profile.enabled)
     const fallbackModel = enabledModels[0]
     if (fallbackModel) {
@@ -176,6 +179,18 @@ export class SessionStore {
     return [...(this.state.mcpServers ?? [])].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
   }
 
+  async isPluginEnabled(pluginId: string): Promise<boolean> {
+    await this.load()
+    return this.state.pluginEnabled?.[pluginId] ?? true
+  }
+
+  async setPluginEnabled(pluginId: string, enabled: boolean): Promise<void> {
+    await this.load()
+    this.state.pluginEnabled ??= {}
+    this.state.pluginEnabled[pluginId] = enabled
+    await this.flush()
+  }
+
   async saveMcpServer(input: SaveMcpServerInput): Promise<McpServerDefinition> {
     await this.load()
     const name = input.name.trim()
@@ -234,6 +249,25 @@ export class SessionStore {
   async listSkills(): Promise<SkillDefinition[]> {
     await this.load()
     return [...(this.state.skills ?? [])].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+  }
+
+  async listEnabledSkillInstructions(maxCharacters = 16_000): Promise<Array<{ name: string; content: string }>> {
+    await this.load()
+    const instructions: Array<{ name: string; content: string }> = []
+    let remaining = maxCharacters
+    for (const skill of (this.state.skills ?? []).filter((item) => item.enabled)) {
+      if (remaining <= 0) break
+      try {
+        const content = (await readFile(skill.manifestPath, 'utf8')).trim()
+        if (!content) continue
+        const selected = content.slice(0, remaining)
+        instructions.push({ name: skill.name, content: selected })
+        remaining -= selected.length
+      } catch {
+        // A moved or deleted local skill is ignored until the user repairs it.
+      }
+    }
+    return instructions
   }
 
   async importSkill(sourcePath: string): Promise<SkillDefinition> {
@@ -404,7 +438,10 @@ export class SessionStore {
 
   async listWorkspaces(): Promise<Workspace[]> {
     await this.load()
-    return [...(this.state.workspaces ?? [])].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+    return [...(this.state.workspaces ?? [])].sort((a, b) => {
+      if (Boolean(a.pinned) !== Boolean(b.pinned)) return a.pinned ? -1 : 1
+      return b.updatedAt.localeCompare(a.updatedAt)
+    })
   }
 
   async createWorkspace(input: CreateWorkspaceInput): Promise<Workspace> {
@@ -423,9 +460,20 @@ export class SessionStore {
     }
 
     const existingPath = (this.state.workspaces ?? []).find((workspace) => workspace.path === sourceFolders[0])
-    if (existingPath) throw new Error('该源码目录已经属于现有项目')
+    if (existingPath) {
+      if (!existingPath.removedAt) throw new Error('该源码目录已经属于现有项目')
+      existingPath.name = name
+      existingPath.sourceFolders = sourceFolders
+      existingPath.defaultModelProfileId = input.defaultModelProfileId
+      existingPath.removedAt = undefined
+      existingPath.updatedAt = new Date().toISOString()
+      await this.flush()
+      return existingPath
+    }
     const duplicateName = (this.state.workspaces ?? []).some(
-      (workspace) => workspace.name.localeCompare(name, undefined, { sensitivity: 'accent' }) === 0
+      (workspace) =>
+        !workspace.removedAt &&
+        workspace.name.localeCompare(name, undefined, { sensitivity: 'accent' }) === 0
     )
     if (duplicateName) throw new Error('已存在同名项目')
 
@@ -442,6 +490,55 @@ export class SessionStore {
     }
     this.state.workspaces ??= []
     this.state.workspaces.push(workspace)
+    await this.flush()
+    return workspace
+  }
+
+  async updateWorkspace(input: UpdateWorkspaceInput): Promise<Workspace> {
+    await this.load()
+    const workspace = (this.state.workspaces ?? []).find((item) => item.id === input.id)
+    if (!workspace) throw new Error('找不到对应项目')
+
+    if (input.name !== undefined) {
+      const name = input.name.trim()
+      if (!name) throw new Error('项目名称不能为空')
+      const duplicateName = (this.state.workspaces ?? []).some(
+        (item) =>
+          item.id !== workspace.id &&
+          !item.removedAt &&
+          item.name.localeCompare(name, undefined, { sensitivity: 'accent' }) === 0
+      )
+      if (duplicateName) throw new Error('已存在同名项目')
+      workspace.name = name
+    }
+
+    if (input.sourceFolders !== undefined) {
+      const requestedFolders = [...new Set(input.sourceFolders.map((path) => path.trim()).filter(Boolean))]
+      if (requestedFolders.length === 0) throw new Error('请至少保留一个源码目录')
+      const sourceFolders: string[] = []
+      for (const folder of requestedFolders) {
+        const resolved = await realpath(folder)
+        if (!(await stat(resolved)).isDirectory()) throw new Error(`不是有效目录：${folder}`)
+        const belongsToAnotherProject = (this.state.workspaces ?? []).some(
+          (item) => item.id !== workspace.id && !item.removedAt && item.sourceFolders?.includes(resolved)
+        )
+        if (belongsToAnotherProject) throw new Error(`源码目录已经属于其他项目：${folder}`)
+        if (!sourceFolders.includes(resolved)) sourceFolders.push(resolved)
+      }
+      workspace.sourceFolders = sourceFolders
+      workspace.path = sourceFolders[0]
+    }
+
+    if (input.icon !== undefined) workspace.icon = input.icon
+    if (input.color !== undefined) workspace.color = input.color
+    if (input.pinned !== undefined) workspace.pinned = input.pinned
+    if (input.removed !== undefined) workspace.removedAt = input.removed ? new Date().toISOString() : undefined
+    if (input.enabledPluginIds !== undefined) {
+      workspace.enabledPluginIds = [
+        ...new Set([CORE_TOOLS_PLUGIN_ID, ...input.enabledPluginIds.filter(Boolean)])
+      ]
+    }
+    workspace.updatedAt = new Date().toISOString()
     await this.flush()
     return workspace
   }

@@ -1,19 +1,25 @@
 import type {
   AgentDefinition,
   AgentId,
+  CapabilityDefinition,
   PluginDefinition,
-  PluginScanResult
+  PluginScanResult,
+  RegisteredCapability
 } from '../../shared/contracts'
 import type { AgentAdapter } from '../agents/types'
 import { builtInPlugins } from './builtin'
 import { detectPluginCli } from './detection'
 import type { RegisteredPlugin, ScannedPlugin } from './types'
+import { SessionStore } from '../storage'
 
 export class PluginManager {
   private scanned = new Map<AgentId, ScannedPlugin>()
   private scannedAt = ''
 
-  constructor(private readonly registered: RegisteredPlugin[] = builtInPlugins) {}
+  constructor(
+    private readonly store: SessionStore,
+    private readonly registered: RegisteredPlugin[] = builtInPlugins
+  ) {}
 
   async scan(force = false): Promise<PluginScanResult> {
     if (this.scanned.size > 0 && !force) return this.snapshot()
@@ -21,10 +27,14 @@ export class PluginManager {
     const results = await Promise.all(
       this.registered.map(async ({ manifest, runtime }): Promise<ScannedPlugin> => {
         const detected = await detectPluginCli(manifest)
+        const enabled = await this.store.isPluginEnabled(manifest.id)
         let status: PluginDefinition['status']
         let statusMessage: string
 
-        if (!detected.found) {
+        if (!enabled) {
+          status = 'disabled'
+          statusMessage = '插件已停用'
+        } else if (!detected.found) {
           status = 'missing'
           statusMessage = '未在本机检测到 CLI'
         } else if (detected.error) {
@@ -55,6 +65,7 @@ export class PluginManager {
             capabilities: manifest.capabilities,
             permissions: manifest.permissions,
             agentId: manifest.agentId,
+            enabled,
             available: status === 'ready'
           }
         }
@@ -85,6 +96,34 @@ export class PluginManager {
         registered: definition.capabilities
       }
     }))
+  }
+
+  async setEnabled(pluginId: string, enabled: boolean): Promise<PluginScanResult> {
+    if (!this.registered.some((plugin) => plugin.manifest.id === pluginId)) {
+      throw new Error('找不到对应插件')
+    }
+    await this.store.setPluginEnabled(pluginId, enabled)
+    return this.scan(true)
+  }
+
+  async listModelCapabilities(): Promise<RegisteredCapability[]> {
+    const scan = await this.scan()
+    return this.registered.flatMap(({ manifest }) => {
+      const plugin = scan.plugins.find((item) => item.id === manifest.id)
+      return manifest.modelCapabilities.map((capability) => ({
+        ...capability,
+        pluginId: manifest.id,
+        pluginName: manifest.name,
+        available: plugin?.available ?? false,
+        statusMessage: plugin?.statusMessage ?? '插件未注册'
+      }))
+    })
+  }
+
+  getModelCapability(pluginId: string, capabilityId: string): CapabilityDefinition | undefined {
+    return this.registered
+      .find((plugin) => plugin.manifest.id === pluginId)
+      ?.manifest.modelCapabilities.find((capability) => capability.id === capabilityId)
   }
 
   async getRunnableAgent(agentId: AgentId): Promise<{

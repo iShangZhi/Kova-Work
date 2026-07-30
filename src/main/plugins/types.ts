@@ -2,7 +2,8 @@ import type {
   AgentId,
   PermissionMode,
   PluginCapability,
-  PluginDefinition
+  PluginDefinition,
+  CapabilityDefinition
 } from '../../shared/contracts'
 import type { AgentAdapter } from '../agents/types'
 
@@ -16,6 +17,7 @@ export interface PluginManifest {
   protocol: string
   runtimeReady: boolean
   capabilities: PluginCapability[]
+  modelCapabilities: CapabilityDefinition[]
   permissionModes: PermissionMode[]
   detection?: {
     commands: string[]

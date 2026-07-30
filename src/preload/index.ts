@@ -12,6 +12,7 @@ import type {
   StartSessionInput,
   StartTaskInput,
   TaskEvent,
+  UpdateWorkspaceInput,
   KovaApi
 } from '../shared/contracts'
 
@@ -19,6 +20,7 @@ const api: KovaApi = {
   listAgents: () => ipcRenderer.invoke('agents:list'),
   listPlugins: () => ipcRenderer.invoke('plugins:list'),
   rescanPlugins: () => ipcRenderer.invoke('plugins:rescan'),
+  setPluginEnabled: (id: string, enabled: boolean) => ipcRenderer.invoke('plugins:set-enabled', id, enabled),
   listMcpServers: () => ipcRenderer.invoke('mcp:list'),
   saveMcpServer: (input: SaveMcpServerInput) => ipcRenderer.invoke('mcp:save', input),
   updateMcpServer: (input: UpdateMcpServerInput) => ipcRenderer.invoke('mcp:update', input),
@@ -35,6 +37,7 @@ const api: KovaApi = {
   listCapabilities: () => ipcRenderer.invoke('capabilities:list'),
   listWorkspaces: () => ipcRenderer.invoke('workspaces:list'),
   createWorkspace: (input: CreateWorkspaceInput) => ipcRenderer.invoke('workspaces:create', input),
+  updateWorkspace: (input: UpdateWorkspaceInput) => ipcRenderer.invoke('workspaces:update', input),
   listTasks: () => ipcRenderer.invoke('tasks:list'),
   getTask: (taskId: string) => ipcRenderer.invoke('tasks:get', taskId),
   startTask: (input: StartTaskInput) => ipcRenderer.invoke('tasks:start', input),

@@ -11,7 +11,7 @@ import { completeWithTools, type ModelMessage, type ModelTool } from '../model-c
 import { SessionStore } from '../storage'
 import { CapabilityRegistry } from './capability-registry'
 
-const MAX_CAPABILITY_CALLS = 8
+const MAX_CAPABILITY_CALLS = 32
 const MAX_HISTORY_EVENTS = 16
 const MAX_HISTORY_CHARS = 12_000
 
@@ -81,6 +81,7 @@ export class ModelOrchestrator {
       }
     }))
     const details = await this.store.getTask(task.id)
+    const enabledSkills = await this.store.listEnabledSkillInstructions()
     const historyContext = buildHistoryContext(
       details?.events.filter((event) => event.runId !== run.id) ?? []
     )
@@ -91,6 +92,9 @@ export class ModelOrchestrator {
           profile.systemPrompt,
           '你是 Kova 个人工作台的任务编排器。',
           `当前实际模型为 ${profile.provider} / ${profile.model}；涉及模型身份时以此配置为准，不要沿用历史消息中的身份声明。`,
+          enabledSkills.length
+            ? `以下是用户启用的本地技能说明。仅在与当前任务相关时遵循：\n\n${enabledSkills.map((skill) => `【${skill.name}】\n${skill.content}`).join('\n\n')}`
+            : '',
           registered.length
             ? '根据用户目标选择必要的能力执行，不要声称执行了尚未调用的工具。'
             : '当前没有可用的本地工具。请直接回答能够完成的部分，并明确说明无法实际执行的操作。',
@@ -208,6 +212,26 @@ export class ModelOrchestrator {
     }
 
     if (signal.aborted) throw new DOMException('Aborted', 'AbortError')
-    throw new Error(`任务已达到单轮最大能力调用次数（${MAX_CAPABILITY_CALLS}）`)
+
+    const finalCompletion = await completeWithTools(
+      profile,
+      [
+        ...messages,
+        {
+          role: 'system',
+          content: `本轮已执行 ${MAX_CAPABILITY_CALLS} 次本地能力调用。请停止调用工具，基于已有结果给出当前结论，并明确尚未完成的部分。`
+        }
+      ],
+      [],
+      signal
+    )
+    const finalContent = finalCompletion.content || `本轮已完成 ${MAX_CAPABILITY_CALLS} 次本地操作，请继续任务以处理剩余部分。`
+    await emit('model_message', finalContent, {
+      provider: profile.provider,
+      model: profile.model,
+      usage: finalCompletion.usage,
+      capabilityLimitReached: true
+    })
+    return finalContent
   }
 }

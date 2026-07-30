@@ -3,28 +3,43 @@ import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import {
   ArrowLeft,
+  BookOpen,
+  Braces,
+  BriefcaseBusiness,
   ChevronRight,
   CirclePlus,
   Cpu,
   Folder,
   FolderOpen,
   FolderPlus,
+  Globe2,
+  GraduationCap,
+  Heart,
+  MoreHorizontal,
+  Palette,
+  Pencil,
   Pin,
+  PinOff,
   Search,
   Settings,
   ShieldCheck,
   SquarePen,
   SunMoon,
+  Terminal,
   Trash2,
+  Wrench,
   X
 } from 'lucide-react'
+import type { LucideIcon } from 'lucide-react'
 import type {
   AgentDefinition,
   ModelProfile,
+  McpServerDefinition,
   PermissionMode,
   PluginDefinition,
   PluginStatus,
   RegisteredCapability,
+  SkillDefinition,
   Task,
   TaskEvent,
   TaskStatus,
@@ -35,7 +50,7 @@ import packageInfo from '../../../package.json'
 
 type ViewId = 'today' | 'projects' | 'tasks' | 'agents' | 'plugins' | 'settings'
 type ThemeMode = 'dark' | 'light'
-type SettingsSectionId = 'general' | 'models' | 'appearance'
+type SettingsSectionId = 'general' | 'models' | 'appearance' | 'extensions'
 type TaskFilter = 'all' | 'running' | 'completed' | 'failed'
 type ActivityStatus = TaskStatus
 
@@ -66,10 +81,35 @@ const taskEventLabels: Record<TaskEvent['type'], string> = {
   completed: '完成'
 }
 
+interface CapabilityEventGroup {
+  type: 'capability_group'
+  id: string
+  events: TaskEvent[]
+}
+
+function groupConversationEvents(events: TaskEvent[]): Array<TaskEvent | CapabilityEventGroup> {
+  const items: Array<TaskEvent | CapabilityEventGroup> = []
+  for (const event of events) {
+    if (event.type === 'completed') continue
+    if (event.type === 'capability_call' || event.type === 'capability_result') {
+      const previous = items.at(-1)
+      if (previous?.type === 'capability_group') {
+        previous.events.push(event)
+      } else {
+        items.push({ type: 'capability_group', id: `capability-group-${event.id}`, events: [event] })
+      }
+      continue
+    }
+    items.push(event)
+  }
+  return items
+}
+
 const pluginStatusLabels: Record<PluginStatus, string> = {
   ready: '运行就绪',
   detected: '运行待接入',
   missing: '缺少依赖',
+  disabled: '已停用',
   error: '依赖异常'
 }
 
@@ -99,12 +139,36 @@ function workspaceName(path: string): string {
   return path.split('/').filter(Boolean).at(-1) ?? path
 }
 
+const projectIconOptions: Array<{ id: string; label: string; icon: LucideIcon }> = [
+  { id: 'braces', label: '代码', icon: Braces },
+  { id: 'folder', label: '文件夹', icon: Folder },
+  { id: 'terminal', label: '终端', icon: Terminal },
+  { id: 'book', label: '文档', icon: BookOpen },
+  { id: 'study', label: '学习', icon: GraduationCap },
+  { id: 'design', label: '设计', icon: Palette },
+  { id: 'work', label: '工作', icon: BriefcaseBusiness },
+  { id: 'tools', label: '工具', icon: Wrench },
+  { id: 'heart', label: '收藏', icon: Heart },
+  { id: 'web', label: '网站', icon: Globe2 }
+]
+
+const projectColorOptions = ['#34363a', '#ef4444', '#f97316', '#f5b800', '#16a34a', '#1687f8', '#8b5cf6', '#ec4899']
+
+function ProjectGlyph({ icon = 'braces', color }: { icon?: string; color?: string }): React.JSX.Element {
+  const Icon = projectIconOptions.find((item) => item.id === icon)?.icon ?? Braces
+  return <Icon aria-hidden="true" style={color ? { color } : undefined} />
+}
+
 export function App(): React.JSX.Element {
   const [view, setView] = useState<ViewId>('agents')
   const [agents, setAgents] = useState<AgentDefinition[]>([])
   const [plugins, setPlugins] = useState<PluginDefinition[]>([])
   const [pluginsScannedAt, setPluginsScannedAt] = useState('')
   const [scanningPlugins, setScanningPlugins] = useState(false)
+  const [skills, setSkills] = useState<SkillDefinition[]>([])
+  const [mcpServers, setMcpServers] = useState<McpServerDefinition[]>([])
+  const [skillQuery, setSkillQuery] = useState('')
+  const [skillScope, setSkillScope] = useState<'all' | 'personal' | 'system'>('all')
   const [modelProfiles, setModelProfiles] = useState<ModelProfile[]>([])
   const [tasks, setTasks] = useState<Task[]>([])
   const [activeTask, setActiveTask] = useState<TaskWithDetails | null>(null)
@@ -133,6 +197,15 @@ export function App(): React.JSX.Element {
   const [projectSourceFolders, setProjectSourceFolders] = useState<string[]>([])
   const [projectError, setProjectError] = useState('')
   const [creatingProject, setCreatingProject] = useState(false)
+  const [projectMenuId, setProjectMenuId] = useState<string | null>(null)
+  const [editingProject, setEditingProject] = useState<Workspace | null>(null)
+  const [editProjectName, setEditProjectName] = useState('')
+  const [editProjectSourceFolders, setEditProjectSourceFolders] = useState<string[]>([])
+  const [editProjectIcon, setEditProjectIcon] = useState('braces')
+  const [editProjectColor, setEditProjectColor] = useState(projectColorOptions[0])
+  const [editProjectEnabledPluginIds, setEditProjectEnabledPluginIds] = useState<string[]>([])
+  const [showProjectIconPicker, setShowProjectIconPicker] = useState(false)
+  const [savingProject, setSavingProject] = useState(false)
   const [themeMode, setThemeMode] = useState<ThemeMode>(
     () => (localStorage.getItem('kova-theme') as ThemeMode | null) ?? 'light'
   )
@@ -158,22 +231,24 @@ export function App(): React.JSX.Element {
   }, [tasks, workspaces, modelProfiles])
 
   const projects = useMemo(() => {
-    const grouped = new Map<string, { name: string; items: ActivityItem[] }>(
-      workspaces.map((item) => [item.path, { name: item.name, items: [] }])
+    const visibleWorkspaces = workspaces.filter((item) => !item.removedAt)
+    const grouped = new Map<string, { workspace?: Workspace; name: string; items: ActivityItem[] }>(
+      visibleWorkspaces.map((item) => [item.path, { workspace: item, name: item.name, items: [] }])
     )
-    activityItems.filter((item) => item.workspacePath).forEach((item) => {
-      const current = grouped.get(item.workspacePath) ?? {
-        name: item.workspaceLabel,
-        items: []
-      }
+    activityItems.filter((item) => grouped.has(item.workspacePath)).forEach((item) => {
+      const current = grouped.get(item.workspacePath)!
       current.items.push(item)
       grouped.set(item.workspacePath, current)
     })
     return [...grouped.entries()].map(([path, project]) => ({
+      id: project.workspace?.id ?? path,
       path,
       name: project.name || workspaceName(path),
+      icon: project.workspace?.icon,
+      color: project.workspace?.color,
+      pinned: project.workspace?.pinned,
       items: project.items
-    }))
+    })).sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)))
   }, [activityItems, workspaces])
 
   const runningCount = activityItems.filter((item) => item.status === 'running').length
@@ -183,6 +258,35 @@ export function App(): React.JSX.Element {
   const filteredActivities =
     taskFilter === 'all' ? activityItems : activityItems.filter((item) => item.status === taskFilter)
   const nativeCapabilities = capabilities.filter((item) => item.pluginId === 'com.kova.core-tools')
+  const visibleSkills = useMemo(() => {
+    const pluginById = new Map(plugins.map((plugin) => [plugin.id, plugin]))
+    const capabilitySkills = capabilities.map((capability) => {
+      const plugin = pluginById.get(capability.pluginId)
+      return {
+        id: `capability:${capability.pluginId}:${capability.id}`,
+        name: capability.name,
+        description: capability.description,
+        source: 'system' as const,
+        enabled: capability.pluginId === 'com.kova.core-tools' || Boolean(plugin?.enabled),
+        available: capability.available,
+        badge: capability.pluginId === 'com.kova.core-tools' ? 'K' : plugin?.name.slice(0, 1) ?? '✦'
+      }
+    })
+    const personalSkills = skills.map((skill) => ({
+      id: `skill:${skill.id}`,
+      name: skill.name,
+      description: skill.description,
+      source: 'personal' as const,
+      enabled: skill.enabled,
+      available: skill.status !== 'error',
+      badge: '✦'
+    }))
+    const query = skillQuery.trim().toLowerCase()
+    return [...capabilitySkills, ...personalSkills].filter((skill) =>
+      (skillScope === 'all' || skill.source === skillScope) &&
+      (!query || `${skill.name} ${skill.description}`.toLowerCase().includes(query))
+    )
+  }, [capabilities, plugins, skills, skillQuery, skillScope])
 
   useEffect(() => {
     document.documentElement.dataset.theme = themeMode
@@ -199,15 +303,28 @@ export function App(): React.JSX.Element {
   }, [defaultModelProfileId])
 
   useEffect(() => {
+    if (!projectMenuId) return
+    const closeMenu = (event: PointerEvent): void => {
+      const target = event.target
+      if (target instanceof Element && (target.closest('.project-more-menu') || target.closest('.project-row-actions'))) return
+      setProjectMenuId(null)
+    }
+    window.addEventListener('pointerdown', closeMenu)
+    return () => window.removeEventListener('pointerdown', closeMenu)
+  }, [projectMenuId])
+
+  useEffect(() => {
     void Promise.all([
       window.kova.listAgents(),
       window.kova.listPlugins(),
       window.kova.listModelProfiles(),
       window.kova.listTasks(),
       window.kova.listWorkspaces(),
-      window.kova.listCapabilities()
+      window.kova.listCapabilities(),
+      window.kova.listSkills(),
+      window.kova.listMcpServers()
     ]).then(
-      ([agentItems, pluginResult, modelItems, taskItems, workspaceItems, capabilityItems]) => {
+      ([agentItems, pluginResult, modelItems, taskItems, workspaceItems, capabilityItems, skillItems, mcpItems]) => {
         setAgents(agentItems)
         setPlugins(pluginResult.plugins)
         setPluginsScannedAt(pluginResult.scannedAt)
@@ -215,6 +332,8 @@ export function App(): React.JSX.Element {
         setTasks(taskItems)
         setWorkspaces(workspaceItems)
         setCapabilities(capabilityItems)
+        setSkills(skillItems)
+        setMcpServers(mcpItems)
         const projectDefault = workspaceItems.find((item) => item.path === workspace)?.defaultModelProfileId
         const savedDefault = modelItems.find((item) => item.id === defaultModelProfileId)?.id
         setModelProfileId(
@@ -270,6 +389,7 @@ export function App(): React.JSX.Element {
       setPlugins(result.plugins)
       setPluginsScannedAt(result.scannedAt)
       setAgents(await window.kova.listAgents())
+      setCapabilities(await window.kova.listCapabilities())
     } finally {
       setScanningPlugins(false)
     }
@@ -342,6 +462,96 @@ export function App(): React.JSX.Element {
     }
   }
 
+  function openEditProject(projectId: string): void {
+    const project = workspaces.find((item) => item.id === projectId)
+    if (!project) return
+    setEditingProject(project)
+    setEditProjectName(project.name)
+    setEditProjectSourceFolders(project.sourceFolders ?? [project.path])
+    setEditProjectIcon(project.icon ?? 'braces')
+    setEditProjectColor(project.color ?? projectColorOptions[0])
+    setEditProjectEnabledPluginIds(project.enabledPluginIds)
+    setProjectError('')
+    setProjectMenuId(null)
+    setShowProjectIconPicker(false)
+  }
+
+  function closeEditProject(): void {
+    if (savingProject) return
+    setEditingProject(null)
+    setProjectError('')
+    setShowProjectIconPicker(false)
+  }
+
+  async function addEditProjectSourceFolder(): Promise<void> {
+    const chosen = await window.kova.chooseWorkspace()
+    if (!chosen) return
+    setEditProjectSourceFolders((current) => current.includes(chosen) ? current : [...current, chosen])
+    setProjectError('')
+  }
+
+  async function saveEditedProject(event: React.FormEvent): Promise<void> {
+    event.preventDefault()
+    if (!editingProject) return
+    setSavingProject(true)
+    setProjectError('')
+    try {
+      const updated = await window.kova.updateWorkspace({
+        id: editingProject.id,
+        name: editProjectName,
+        sourceFolders: editProjectSourceFolders,
+        icon: editProjectIcon,
+        color: editProjectColor,
+        enabledPluginIds: editProjectEnabledPluginIds
+      })
+      setWorkspaces((current) => current.map((item) => item.id === updated.id ? updated : item))
+      if (workspace === editingProject.path) setWorkspace(updated.path)
+      setExpandedProjectPaths((current) =>
+        current.map((path) => path === editingProject.path ? updated.path : path)
+      )
+      setEditingProject(null)
+      setShowProjectIconPicker(false)
+    } catch (cause) {
+      setProjectError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setSavingProject(false)
+    }
+  }
+
+  async function togglePluginEnabled(pluginId: string, enabled: boolean): Promise<void> {
+    setScanningPlugins(true)
+    try {
+      const result = await window.kova.setPluginEnabled(pluginId, enabled)
+      setPlugins(result.plugins)
+      setPluginsScannedAt(result.scannedAt)
+      setAgents(await window.kova.listAgents())
+      setCapabilities(await window.kova.listCapabilities())
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    } finally {
+      setScanningPlugins(false)
+    }
+  }
+
+  async function togglePinnedProject(projectId: string): Promise<void> {
+    const project = workspaces.find((item) => item.id === projectId)
+    if (!project) return
+    const updated = await window.kova.updateWorkspace({ id: project.id, pinned: !project.pinned })
+    setWorkspaces((current) => current.map((item) => item.id === updated.id ? updated : item))
+    setProjectMenuId(null)
+  }
+
+  async function removeProject(projectId: string): Promise<void> {
+    const project = workspaces.find((item) => item.id === projectId)
+    if (!project) return
+    if (!window.confirm(`从项目列表移除“${project.name}”吗？\n\n不会删除源码文件和历史会话。`)) return
+    const updated = await window.kova.updateWorkspace({ id: project.id, removed: true })
+    setWorkspaces((current) => current.map((item) => item.id === updated.id ? updated : item))
+    setExpandedProjectPaths((current) => current.filter((path) => path !== project.path))
+    if (workspace === project.path && !activeTask) setWorkspace('')
+    setProjectMenuId(null)
+  }
+
   function openProject(path: string): void {
     const project = workspaces.find((item) => item.path === path)
     setWorkspace(path)
@@ -353,6 +563,11 @@ export function App(): React.JSX.Element {
   }
 
   function toggleProject(path: string): void {
+    const project = workspaces.find((item) => item.path === path)
+    setWorkspace(path)
+    if (project?.defaultModelProfileId && modelProfiles.some((item) => item.id === project.defaultModelProfileId)) {
+      setModelProfileId(project.defaultModelProfileId)
+    }
     setExpandedProjectPaths((current) =>
       current.includes(path) ? current.filter((item) => item !== path) : [...current, path]
     )
@@ -364,6 +579,18 @@ export function App(): React.JSX.Element {
     setPrompt('')
     setError('')
     setView('agents')
+  }
+
+  async function chooseTaskWorkspace(): Promise<void> {
+    if (activeTask) return
+    const chosen = await window.kova.chooseWorkspace()
+    if (!chosen) return
+    setWorkspace(chosen)
+    const project = workspaces.find((item) => item.path === chosen)
+    if (project?.defaultModelProfileId && modelProfiles.some((item) => item.id === project.defaultModelProfileId)) {
+      setModelProfileId(project.defaultModelProfileId)
+    }
+    setError('')
   }
 
   async function submit(): Promise<void> {
@@ -391,7 +618,6 @@ export function App(): React.JSX.Element {
         objective: nextPrompt,
         workspace,
         modelProfileId,
-        allowedPluginIds: [],
         permissionMode
       })
       setActiveTask((await window.kova.getTask(task.id)) ?? {
@@ -481,6 +707,16 @@ export function App(): React.JSX.Element {
           if (modelProfileId === id) setModelProfileId('')
           if (defaultModelProfileId === id) setDefaultModelProfileId('')
         }}
+        plugins={plugins}
+        capabilities={capabilities}
+        skills={skills}
+        mcpServers={mcpServers}
+        onPluginEnabled={(id, enabled) => togglePluginEnabled(id, enabled)}
+        onSkillEnabled={async (id, enabled) => {
+          const updated = await window.kova.setSkillEnabled(id, enabled)
+          setSkills((current) => current.map((item) => item.id === id ? updated : item))
+        }}
+        onSkillImported={(skill) => setSkills((current) => [skill, ...current.filter((item) => item.id !== skill.id)])}
       />
     )
   }
@@ -493,17 +729,27 @@ export function App(): React.JSX.Element {
           <span>Kova</span>
           <small>v{packageInfo.version}</small>
         </div>
-        <button
-          className={`new-task-button ${view === 'agents' && !activeTask ? 'active' : ''}`}
-          type="button"
-          onClick={newSession}
-        >
-          <SquarePen aria-hidden="true" />
-          <span>新建任务</span>
-          <CirclePlus className="new-task-plus" aria-hidden="true" />
-        </button>
+        <nav className="sidebar-primary-nav" aria-label="主要功能">
+          <button
+            className={`new-task-button ${view === 'agents' && !activeTask ? 'active' : ''}`}
+            type="button"
+            onClick={newSession}
+          >
+            <SquarePen aria-hidden="true" />
+            <span>新建任务</span>
+            <CirclePlus className="new-task-plus" aria-hidden="true" />
+          </button>
+          <button
+            className={`sidebar-action sidebar-primary-action ${view === 'plugins' ? 'active' : ''}`}
+            type="button"
+            onClick={() => setView('plugins')}
+          >
+            <Cpu aria-hidden="true" />
+            <span>插件</span>
+          </button>
+        </nav>
 
-        <section className="sidebar-group">
+        <section className="sidebar-group project-group">
           <div className="sidebar-group-heading">
             <button className="sidebar-group-toggle" type="button" aria-expanded={projectsExpanded} onClick={() => setProjectsExpanded((expanded) => !expanded)}>
               <span>项目</span>
@@ -527,19 +773,46 @@ export function App(): React.JSX.Element {
                       onClick={() => toggleProject(project.path)}
                     >
                       <ChevronRight className={expandedProjectPaths.includes(project.path) ? 'expanded' : ''} aria-hidden="true" />
-                      <Folder aria-hidden="true" />
+                      <ProjectGlyph icon={project.icon} color={project.color} />
                       <span>{project.name}</span>
                     </button>
-                    <button
-                      className="project-new-task"
-                      type="button"
-                      title={`在 ${project.name} 中新建任务`}
-                      aria-label={`在 ${project.name} 中新建任务`}
-                      onClick={() => openProject(project.path)}
-                    >
-                      <CirclePlus aria-hidden="true" />
-                    </button>
+                    <span className="project-row-actions">
+                      <button
+                        type="button"
+                        title="更多操作"
+                        aria-label={`${project.name} 更多操作`}
+                        onClick={() => setProjectMenuId((current) => current === project.id ? null : project.id)}
+                      >
+                        <MoreHorizontal aria-hidden="true" />
+                      </button>
+                      <button type="button" title="编辑项目" aria-label={`编辑 ${project.name}`} onClick={() => openEditProject(project.id)}>
+                        <Pencil aria-hidden="true" />
+                      </button>
+                    </span>
                   </div>
+                  {projectMenuId === project.id && (
+                    <div className="project-more-menu">
+                      <button type="button" onClick={() => void togglePinnedProject(project.id)}>
+                        {project.pinned ? <PinOff aria-hidden="true" /> : <Pin aria-hidden="true" />}
+                        <span>{project.pinned ? '取消置顶' : '置顶项目'}</span>
+                      </button>
+                      <button type="button" onClick={() => {
+                        setProjectMenuId(null)
+                        void window.kova.revealPath(project.path)
+                      }}>
+                        <FolderOpen aria-hidden="true" />
+                        <span>在 Finder 中显示</span>
+                      </button>
+                      <button type="button" onClick={() => openEditProject(project.id)}>
+                        <Settings aria-hidden="true" />
+                        <span>编辑项目</span>
+                      </button>
+                      <button className="danger" type="button" onClick={() => void removeProject(project.id)}>
+                        <X aria-hidden="true" />
+                        <span>移除</span>
+                      </button>
+                    </div>
+                  )}
                   {expandedProjectPaths.includes(project.path) && (
                     <div className="project-session-list">
                       {project.items.length === 0 && <p>暂无任务</p>}
@@ -568,14 +841,21 @@ export function App(): React.JSX.Element {
                   )}
                   <div className="project-hover-card" role="tooltip">
                     <div className="project-hover-title">
-                      <span><Folder aria-hidden="true" /><strong>{project.name}</strong></span>
-                      <Pin aria-hidden="true" />
+                      <span><ProjectGlyph icon={project.icon} color={project.color} /><strong>{project.name}</strong></span>
+                      <button
+                        className={project.pinned ? 'active' : ''}
+                        type="button"
+                        title={project.pinned ? '取消置顶' : '置顶项目'}
+                        onClick={() => void togglePinnedProject(project.id)}
+                      >
+                        <Pin aria-hidden="true" />
+                      </button>
                     </div>
                     <p>{project.items.length} 个任务 · {project.items.filter((item) => item.status === 'failed' || item.status === 'waiting').length} 个待处理</p>
                     <div className="project-hover-path"><FolderOpen aria-hidden="true" /><span>{project.path}</span></div>
-                    <button type="button" onClick={() => openProject(project.path)}>
-                      <CirclePlus aria-hidden="true" />
-                      <span>在项目中新建任务</span>
+                    <button type="button" onClick={() => openEditProject(project.id)}>
+                      <Settings aria-hidden="true" />
+                      <span>编辑项目</span>
                     </button>
                   </div>
                 </div>
@@ -746,15 +1026,10 @@ export function App(): React.JSX.Element {
           <div className="agent-layout">
             <main className="conversation">
               <header className="conversation-header">
-                <div>
-                  <h1>{activeTask?.task.title ?? '新建 AI 任务'}</h1>
-                  <p>{activeTask
-                    ? `${modelProfiles.find((item) => item.id === activeTask.task.modelProfileId)?.name ?? '自定义模型'} · ${statusLabel(activeTask.task.status)}`
-                    : workspace ? `${workspaceName(workspace)} · 新任务` : '选择项目，然后描述任务目标'}</p>
-                </div>
+                <h1>{activeTask?.task.title ?? '新建任务'}</h1>
                 <div className="header-actions">
-                  <button className="icon-button" type="button" aria-label="新建任务" title="新建任务" onClick={newSession}>
-                    +
+                  <button className="icon-button" type="button" aria-label="更多操作" title="更多操作">
+                    <MoreHorizontal aria-hidden="true" />
                   </button>
                   {isRunning && (
                     <button className="ghost-button danger" type="button" onClick={() => void cancel()}>
@@ -778,20 +1053,29 @@ export function App(): React.JSX.Element {
                     <p>描述你想完成的工作。</p>
                   </div>
                 )}
-                {activeTask?.events.map((event) => (
-                  <article className={`event event-${event.type}`} key={event.id}>
-                    <div className="event-icon">
-                      {event.type === 'error' ? '✕' :
-                        event.type === 'completed' ? '✓' :
-                        event.type === 'capability_call' || event.type === 'cli_output' ? '⌘' :
-                        event.type === 'user_message' ? '◆' :
-                        '◇'}
-                    </div>
-                    <div className="event-content">
-                      <div className="event-meta"><strong>{taskEventLabels[event.type]}</strong><time>{formatTime(event.createdAt)}</time></div>
-                      <TaskEventBody event={event} />
-                    </div>
-                  </article>
+                {groupConversationEvents(activeTask?.events ?? []).map((item) => (
+                  item.type === 'capability_group'
+                    ? <CapabilityEventGroupView group={item} key={item.id} />
+                    : (
+                      <article className={`event event-${item.type}`} key={item.id}>
+                        {item.type !== 'user_message' && item.type !== 'model_message' && (
+                          <div className="event-icon">
+                            {item.type === 'error' ? '✕' :
+                              item.type === 'cli_output' ? '⌘' :
+                              '◇'}
+                          </div>
+                        )}
+                        <div className="event-content">
+                          {item.type !== 'user_message' && (
+                            <div className="event-meta">
+                              <strong>{item.type === 'model_message' ? '已处理' : taskEventLabels[item.type]}</strong>
+                              <time>{formatTime(item.createdAt)}</time>
+                            </div>
+                          )}
+                          <TaskEventBody event={item} />
+                        </div>
+                      </article>
+                    )
                 ))}
               </section>
 
@@ -808,95 +1092,107 @@ export function App(): React.JSX.Element {
                         void submit()
                       }
                     }}
-                    placeholder={isActiveTaskRunning ? '任务运行中…' : activeTask ? '继续描述任务…' : '描述你希望完成的任务…'}
-                    rows={3}
+                    placeholder={isActiveTaskRunning ? '任务运行中…' : '随心输入'}
+                    rows={2}
                     aria-label="会话输入"
                   />
-                  <button className="send-button" type="button" aria-label="发送" title="发送" disabled={!prompt.trim() || isActiveTaskRunning} onClick={() => void submit()}>
-                    →
-                  </button>
+                  <div className="composer-toolbar">
+                    <div className="composer-context">
+                      <button
+                        className="composer-context-button"
+                        type="button"
+                        title={workspace || '选择项目目录'}
+                        disabled={Boolean(activeTask)}
+                        onClick={() => void chooseTaskWorkspace()}
+                      >
+                        <FolderOpen aria-hidden="true" />
+                        <span>{workspace ? workspaceName(workspace) : '选择项目'}</span>
+                      </button>
+                    </div>
+                    <div className="composer-controls">
+                      <select
+                        aria-label="模型"
+                        title="模型"
+                        value={modelProfileId}
+                        disabled={Boolean(activeTask)}
+                        onChange={(event) => setModelProfileId(event.target.value)}
+                      >
+                        <option value="">选择模型</option>
+                        {modelProfiles.filter((item) => item.enabled).map((item) => (
+                          <option value={item.id} key={item.id}>{item.name}</option>
+                        ))}
+                      </select>
+                      <select
+                        aria-label="权限模式"
+                        title="权限模式"
+                        value={permissionMode}
+                        disabled={Boolean(activeTask)}
+                        onChange={(event) => setPermissionMode(event.target.value as PermissionMode)}
+                      >
+                        <option value="read_only">只读</option>
+                        <option value="workspace_write">工作区</option>
+                        <option value="full_access">完全访问</option>
+                      </select>
+                      <button className="send-button" type="button" aria-label="发送" title="发送" disabled={!prompt.trim() || isActiveTaskRunning} onClick={() => void submit()}>
+                        ↑
+                      </button>
+                    </div>
+                  </div>
                 </div>
-                <p className="composer-hint">{isActiveTaskRunning
-                  ? '任务正在运行，可停止后再追加指令'
-                  : !activeTask && workspace
-                    ? `当前项目：${workspaceName(workspace)} · Enter 发送`
-                    : 'Enter 发送 · Shift + Enter 换行'}</p>
               </footer>
             </main>
           </div>
         )}
 
         {view === 'plugins' && (
-          <main className="page-main">
-            <div className="page-header">
-              <div>
-                <h1>能力与扩展</h1>
-                <p>查看模型可调用的 Kova 原生工具、CLI 插件和权限范围。</p>
-              </div>
-              <button className="extension-action" type="button" disabled={scanningPlugins} onClick={() => void rescanPlugins()}>
-                {scanningPlugins ? '检查中' : '检查依赖'}
-              </button>
+          <main className="skill-browser">
+            <div className="skill-breadcrumb">
+              <span>插件</span>
+              <strong>技能</strong>
             </div>
-            <div className="plugin-summary">
-              <span>{nativeCapabilities.length + plugins.length} 个能力组与扩展</span>
-              <span>{nativeCapabilities.length} 个原生工具</span>
-              <span>{plugins.filter((plugin) => plugin.status === 'ready').length} 个运行就绪</span>
-              <span>{plugins.filter((plugin) => plugin.status !== 'ready').length} 个需要处理</span>
-              {pluginsScannedAt && <time>最近依赖检查：{formatTime(pluginsScannedAt)}</time>}
-            </div>
-            <div className="plugin-list">
-              <article className="panel plugin-card core-tools-card">
-                <div className="plugin-card-header">
-                  <span className="plugin-icon">K</span>
-                  <div>
-                    <h2>Kova Core Tools</h2>
-                    <p>内置只读工作区能力，不依赖外部 CLI，并受项目目录边界保护。</p>
-                  </div>
-                  <span className="plugin-status status-ready">运行就绪</span>
-                </div>
-                <div className="native-capability-grid">
-                  {nativeCapabilities.map((capability) => (
-                    <div className="native-capability" key={capability.id}>
+            <header className="skill-browser-header">
+              <h1>技能</h1>
+              <p>通过任务专用技能扩展 Kova 的能力</p>
+            </header>
+            <label className="skill-search">
+              <Search aria-hidden="true" />
+              <input
+                value={skillQuery}
+                onChange={(event) => setSkillQuery(event.target.value)}
+                placeholder="搜索技能"
+                aria-label="搜索技能"
+              />
+            </label>
+            <section className="installed-skills">
+              <h2>已安装</h2>
+              {visibleSkills.length > 0 ? (
+                <div className="skill-grid">
+                  {visibleSkills.map((skill) => (
+                    <article className="skill-list-item" key={skill.id}>
+                      <span className="skill-list-icon">{skill.badge}</span>
                       <span>
-                        <strong>{capability.name}</strong>
-                        <small>{capability.id}</small>
+                        <strong>{skill.name}</strong>
+                        <small>{skill.description}</small>
                       </span>
-                      <p>{capability.description}</p>
-                      <span className={`risk-badge risk-${capability.risk}`}>{capability.risk === 'read' ? '只读' : capability.risk}</span>
-                    </div>
+                      <i className={skill.enabled && skill.available ? 'ready' : ''} aria-label={skill.enabled && skill.available ? '已启用' : '不可用'}>
+                        {skill.enabled && skill.available ? '✓' : '—'}
+                      </i>
+                    </article>
                   ))}
                 </div>
-              </article>
-              {plugins.map((plugin) => (
-                <article className="panel plugin-card" key={plugin.id}>
-                  <div className="plugin-card-header">
-                    <span className="plugin-icon">{plugin.name[0]}</span>
-                    <div>
-                      <h2>{plugin.name}</h2>
-                      <p>{plugin.description}</p>
-                    </div>
-                    <span className={`plugin-status status-${plugin.status}`}>{pluginStatusLabels[plugin.status]}</span>
-                  </div>
-                  <button className="plugin-expand" type="button" aria-expanded={expandedPluginId === plugin.id} onClick={() => setExpandedPluginId((current) => current === plugin.id ? null : plugin.id)}>
-                    {expandedPluginId === plugin.id ? '收起 Manifest 与依赖 ↑' : '查看 Manifest 与依赖 ↓'}
-                  </button>
-                  {expandedPluginId === plugin.id && <div className="plugin-expanded">
-                  <dl className="plugin-details">
-                    <div><dt>Manifest ID</dt><dd>{plugin.id}</dd></div>
-                    <div><dt>插件版本</dt><dd>{plugin.pluginVersion}</dd></div>
-                    <div><dt>依赖版本</dt><dd>{plugin.cliVersion ?? '无 CLI 依赖'}</dd></div>
-                    <div><dt>依赖路径</dt><dd>{plugin.executablePath ?? '—'}</dd></div>
-                    <div><dt>运行协议</dt><dd>{plugin.protocol}</dd></div>
-                  </dl>
-                  <div className="capability-list">
-                    {plugin.capabilities.map((capability) => <span key={capability}>{capability}</span>)}
-                  </div>
-                  <div className="plugin-footer">
-                    <span>依赖检查：{plugin.statusMessage}</span>
-                    <span>文件：{plugin.permissions.filesystem === 'selected-workspace' ? '所选工作目录' : '不访问'} · 网络：{plugin.permissions.network ? '允许' : '禁用'}</span>
-                  </div>
-                  </div>}
-                </article>
+              ) : (
+                <p className="skill-empty">没有匹配的技能</p>
+              )}
+            </section>
+            <div className="skill-scope-tabs" role="group" aria-label="技能来源">
+              {([
+                ['all', '全部'],
+                ['personal', '个人'],
+                ['system', '系统']
+              ] as Array<[typeof skillScope, string]>).map(([id, label]) => (
+                <button className={skillScope === id ? 'active' : ''} type="button" key={id} onClick={() => setSkillScope(id)}>
+                  {label}
+                </button>
               ))}
             </div>
           </main>
@@ -958,6 +1254,110 @@ export function App(): React.JSX.Element {
           </form>
         </div>
       )}
+      {editingProject && (
+        <div className="modal-backdrop" role="presentation" onMouseDown={(event) => {
+          if (event.target === event.currentTarget) closeEditProject()
+        }}>
+          <form className="create-project-modal edit-project-modal" onSubmit={(event) => void saveEditedProject(event)}>
+            <div className="create-project-title">
+              <h2>编辑项目</h2>
+              <button type="button" aria-label="关闭" onClick={closeEditProject}>
+                <X aria-hidden="true" />
+              </button>
+            </div>
+            <div className="project-name-field edit-project-name-field">
+              <button
+                className="project-icon-trigger"
+                type="button"
+                aria-label="选择项目图标和颜色"
+                aria-expanded={showProjectIconPicker}
+                onClick={() => setShowProjectIconPicker((visible) => !visible)}
+              >
+                <ProjectGlyph icon={editProjectIcon} color={editProjectColor} />
+              </button>
+              <input
+                autoFocus
+                value={editProjectName}
+                onChange={(event) => setEditProjectName(event.target.value)}
+                placeholder="项目名称"
+                aria-label="项目名称"
+              />
+              {showProjectIconPicker && (
+                <div className="project-icon-picker">
+                  <div className="project-color-grid" aria-label="项目颜色">
+                    {projectColorOptions.map((color) => (
+                      <button
+                        className={editProjectColor === color ? 'active' : ''}
+                        type="button"
+                        key={color}
+                        title={color}
+                        aria-label={`选择颜色 ${color}`}
+                        style={{ '--project-swatch': color } as React.CSSProperties}
+                        onClick={() => setEditProjectColor(color)}
+                      />
+                    ))}
+                  </div>
+                  <div className="project-icon-grid" aria-label="项目图标">
+                    {projectIconOptions.map((option) => {
+                      const Icon = option.icon
+                      return (
+                        <button
+                          className={editProjectIcon === option.id ? 'active' : ''}
+                          type="button"
+                          key={option.id}
+                          title={option.label}
+                          aria-label={`选择${option.label}图标`}
+                          onClick={() => setEditProjectIcon(option.id)}
+                        >
+                          <Icon aria-hidden="true" />
+                        </button>
+                      )
+                    })}
+                  </div>
+                  <button className="project-icon-picker-done" type="button" onClick={() => setShowProjectIconPicker(false)}>完成</button>
+                </div>
+              )}
+            </div>
+            <div className="project-source-field">
+              <span>Source folders</span>
+              <div className="edit-source-folder-list">
+                {editProjectSourceFolders.map((folder) => (
+                  <div key={folder}>
+                    <Folder aria-hidden="true" />
+                    <span title={folder}>{workspaceName(folder)}</span>
+                    <button
+                      type="button"
+                      aria-label={`移除 ${folder}`}
+                      disabled={editProjectSourceFolders.length === 1}
+                      title={editProjectSourceFolders.length === 1 ? '项目至少需要一个源码目录' : '移除文件夹'}
+                      onClick={() => setEditProjectSourceFolders((current) => current.filter((item) => item !== folder))}
+                    >
+                      <X aria-hidden="true" />
+                    </button>
+                  </div>
+                ))}
+                <button className="edit-add-source-folder" type="button" onClick={() => void addEditProjectSourceFolder()}>
+                  <FolderPlus aria-hidden="true" />
+                  <span>添加文件夹</span>
+                </button>
+              </div>
+            </div>
+            {projectError && <p className="project-form-error">{projectError}</p>}
+            <div className="create-project-actions edit-project-actions">
+              <button className="project-remove-button" type="button" disabled={savingProject} onClick={() => {
+                const projectId = editingProject.id
+                closeEditProject()
+                void removeProject(projectId)
+              }}>移除项目</button>
+              <span />
+              <button className="project-cancel-button" type="button" disabled={savingProject} onClick={closeEditProject}>取消</button>
+              <button className="project-submit-button" type="submit" disabled={savingProject || !editProjectName.trim() || editProjectSourceFolders.length === 0}>
+                {savingProject ? '保存中…' : '保存'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
     </div>
   )
 }
@@ -986,7 +1386,14 @@ function SettingsView({
   onDefaultPermissionChange,
   onDefaultModelChange,
   onModelSaved,
-  onModelDeleted
+  onModelDeleted,
+  plugins,
+  capabilities,
+  skills,
+  mcpServers,
+  onPluginEnabled,
+  onSkillEnabled,
+  onSkillImported
 }: {
   models: ModelProfile[]
   defaultModelProfileId: string
@@ -998,6 +1405,13 @@ function SettingsView({
   onDefaultModelChange: (id: string) => void
   onModelSaved: (model: ModelProfile) => void
   onModelDeleted: (id: string) => void
+  plugins: PluginDefinition[]
+  capabilities: RegisteredCapability[]
+  skills: SkillDefinition[]
+  mcpServers: McpServerDefinition[]
+  onPluginEnabled: (id: string, enabled: boolean) => Promise<void>
+  onSkillEnabled: (id: string, enabled: boolean) => Promise<void>
+  onSkillImported: (skill: SkillDefinition) => void
 }): React.JSX.Element {
   const [section, setSection] = useState<SettingsSectionId>('general')
   const [query, setQuery] = useState('')
@@ -1009,7 +1423,8 @@ function SettingsView({
   }> = [
     { id: 'general', label: '常规', keywords: '常规 权限 默认 permission', icon: ShieldCheck },
     { id: 'models', label: '模型', keywords: '模型 deepseek api key', icon: Cpu },
-    { id: 'appearance', label: '外观', keywords: '外观 深色 浅色 主题', icon: SunMoon }
+    { id: 'appearance', label: '外观', keywords: '外观 深色 浅色 主题', icon: SunMoon },
+    { id: 'extensions', label: '插件', keywords: '插件 技能 MCP 应用 扩展', icon: Wrench }
   ]
   const normalizedQuery = query.trim().toLowerCase()
   const visibleSections = normalizedQuery
@@ -1108,9 +1523,143 @@ function SettingsView({
               </section>
             </>
           )}
+
+          {section === 'extensions' && (
+            <ExtensionSettings
+              plugins={plugins}
+              capabilities={capabilities}
+              skills={skills}
+              mcpServers={mcpServers}
+              onPluginEnabled={onPluginEnabled}
+              onSkillEnabled={onSkillEnabled}
+              onSkillImported={onSkillImported}
+            />
+          )}
         </div>
       </main>
     </div>
+  )
+}
+
+function ExtensionSettings({
+  plugins,
+  capabilities,
+  skills,
+  mcpServers,
+  onPluginEnabled,
+  onSkillEnabled,
+  onSkillImported
+}: {
+  plugins: PluginDefinition[]
+  capabilities: RegisteredCapability[]
+  skills: SkillDefinition[]
+  mcpServers: McpServerDefinition[]
+  onPluginEnabled: (id: string, enabled: boolean) => Promise<void>
+  onSkillEnabled: (id: string, enabled: boolean) => Promise<void>
+  onSkillImported: (skill: SkillDefinition) => void
+}): React.JSX.Element {
+  const [tab, setTab] = useState<'plugins' | 'apps' | 'mcp' | 'skills'>('plugins')
+  const [query, setQuery] = useState('')
+  const [busyId, setBusyId] = useState<string | null>(null)
+  const normalizedQuery = query.trim().toLowerCase()
+  const matches = (name: string, description: string): boolean =>
+    !normalizedQuery || `${name} ${description}`.toLowerCase().includes(normalizedQuery)
+
+  async function importLocalSkill(): Promise<void> {
+    const sourcePath = await window.kova.chooseSkillDirectory()
+    if (!sourcePath) return
+    const imported = await window.kova.importSkill(sourcePath)
+    onSkillImported(imported)
+    setTab('skills')
+  }
+
+  return (
+    <>
+      <p className="settings-lead">管理插件、应用、MCP 和技能。</p>
+      <div className="extension-settings-toolbar">
+        <div className="extension-settings-tabs">
+          <button className={tab === 'plugins' ? 'active' : ''} type="button" onClick={() => setTab('plugins')}>插件 <span>{plugins.length}</span></button>
+          <button className={tab === 'apps' ? 'active' : ''} type="button" onClick={() => setTab('apps')}>应用 <span>0</span></button>
+          <button className={tab === 'mcp' ? 'active' : ''} type="button" onClick={() => setTab('mcp')}>MCP <span>{mcpServers.length}</span></button>
+          <button className={tab === 'skills' ? 'active' : ''} type="button" onClick={() => setTab('skills')}>技能 <span>{capabilities.length + skills.length}</span></button>
+        </div>
+        <label className="extension-settings-search">
+          <Search aria-hidden="true" />
+          <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="搜索插件" aria-label="搜索扩展" />
+        </label>
+      </div>
+
+      {tab === 'plugins' && (
+        <section className="settings-extension-list">
+          {plugins.filter((plugin) => matches(plugin.name, plugin.description)).map((plugin) => (
+            <div key={plugin.id}>
+              <span className="settings-extension-icon">{plugin.name.slice(0, 1)}</span>
+              <span><strong>{plugin.name}</strong><small>{plugin.description}</small></span>
+              <em>{pluginStatusLabels[plugin.status]}</em>
+              <button
+                className={`toggle-switch ${plugin.enabled ? 'on' : ''}`}
+                type="button"
+                role="switch"
+                aria-checked={plugin.enabled}
+                disabled={busyId === plugin.id}
+                onClick={() => {
+                  setBusyId(plugin.id)
+                  void onPluginEnabled(plugin.id, !plugin.enabled).finally(() => setBusyId(null))
+                }}
+              ><span /></button>
+            </div>
+          ))}
+        </section>
+      )}
+
+      {tab === 'apps' && <p className="settings-empty extension-settings-empty">尚未连接应用。应用连接将在下一阶段接入。</p>}
+
+      {tab === 'mcp' && (
+        <section className="settings-extension-list">
+          {mcpServers.length === 0 && <p className="settings-empty">还没有 MCP 配置。</p>}
+          {mcpServers.filter((server) => matches(server.name, server.url ?? server.command ?? '')).map((server) => (
+            <div key={server.id}>
+              <span className="settings-extension-icon">M</span>
+              <span><strong>{server.name}</strong><small>{server.transport === 'http' ? server.url : [server.command, ...(server.args ?? [])].filter(Boolean).join(' ')}</small></span>
+              <em>已配置</em>
+            </div>
+          ))}
+        </section>
+      )}
+
+      {tab === 'skills' && (
+        <>
+          <div className="settings-section-title extension-skill-title">
+            <h2>已安装技能</h2>
+            <button type="button" onClick={() => void importLocalSkill()}>导入技能</button>
+          </div>
+          <section className="settings-extension-list">
+            {capabilities.filter((capability) => matches(capability.name, capability.description)).map((capability) => (
+              <div key={`${capability.pluginId}:${capability.id}`}>
+                <span className="settings-extension-icon">K</span>
+                <span><strong>{capability.name}</strong><small>{capability.description}</small></span>
+                <em>{capability.available ? '系统' : '不可用'}</em>
+                <span className="extension-check">✓</span>
+              </div>
+            ))}
+            {skills.filter((skill) => matches(skill.name, skill.description)).map((skill) => (
+              <div key={skill.id}>
+                <span className="settings-extension-icon">✦</span>
+                <span><strong>{skill.name}</strong><small>{skill.description}</small></span>
+                <em>个人</em>
+                <button
+                  className={`toggle-switch ${skill.enabled ? 'on' : ''}`}
+                  type="button"
+                  role="switch"
+                  aria-checked={skill.enabled}
+                  onClick={() => void onSkillEnabled(skill.id, !skill.enabled)}
+                ><span /></button>
+              </div>
+            ))}
+          </section>
+        </>
+      )}
+    </>
   )
 }
 
@@ -1366,17 +1915,46 @@ function ActivityTable({
   )
 }
 
+function CapabilityEventGroupView({ group }: { group: CapabilityEventGroup }): React.JSX.Element {
+  const calls = group.events.filter((event) => event.type === 'capability_call')
+  const results = group.events.filter((event) => event.type === 'capability_result')
+  const failedCount = results.filter((event) => {
+    const result = event.metadata?.result as { status?: string } | undefined
+    return result?.status && result.status !== 'completed'
+  }).length
+  const summary = calls.length === 1
+    ? calls[0].text.replace(/^调用\s*/, '')
+    : `执行了 ${calls.length} 次本地操作`
+
+  return (
+    <details className={`capability-group ${failedCount ? 'has-error' : ''}`}>
+      <summary>
+        <span className="capability-group-icon"><Terminal aria-hidden="true" /></span>
+        <span>{summary}</span>
+        <small>{failedCount ? `${failedCount} 项失败` : '已完成'}</small>
+        <ChevronRight aria-hidden="true" />
+      </summary>
+      <div className="capability-group-list">
+        {calls.map((call, index) => {
+          const result = results[index]
+          const resultData = result?.metadata?.result as { status?: string; error?: string } | undefined
+          const failed = Boolean(resultData?.status && resultData.status !== 'completed')
+          return (
+            <div className={failed ? 'failed' : ''} key={call.id} title={resultData?.error}>
+              <span>{call.text.replace(/^调用\s*/, '')}</span>
+              <small>{failed ? '失败' : '完成'}</small>
+            </div>
+          )
+        })}
+      </div>
+    </details>
+  )
+}
+
 function TaskEventBody({ event }: { event: TaskEvent }): React.JSX.Element {
   const call = event.type === 'capability_call' ? event.metadata?.call : undefined
   const result = event.type === 'capability_result' ? event.metadata?.result : undefined
-  const modelInfo = event.type === 'model_message'
-    ? {
-        provider: event.metadata?.provider,
-        model: event.metadata?.model,
-        usage: event.metadata?.usage
-      }
-    : undefined
-  const details = call ?? result ?? modelInfo
+  const details = call ?? result
 
   return (
     <>
@@ -1390,7 +1968,7 @@ function TaskEventBody({ event }: { event: TaskEvent }): React.JSX.Element {
       {details && (
         <details className="event-details">
           <summary>
-            {call ? '查看调用参数' : result ? '查看执行结果' : '查看模型信息'}
+            {call ? '查看调用参数' : '查看执行结果'}
           </summary>
           <pre>{JSON.stringify(details, null, 2)}</pre>
         </details>
