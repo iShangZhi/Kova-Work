@@ -281,6 +281,8 @@ export interface Task {
   allowedPluginIds: string[]
   permissionMode: PermissionMode
   status: TaskStatus
+  pinned?: boolean
+  archivedAt?: string
   createdAt: string
   updatedAt: string
   completedAt?: string
@@ -367,6 +369,13 @@ export interface ContinueTaskInput {
   prompt: string
 }
 
+export interface UpdateTaskInput {
+  id: string
+  title?: string
+  pinned?: boolean
+  archived?: boolean
+}
+
 export interface TaskWithDetails {
   task: Task
   workspace?: Workspace
@@ -443,6 +452,7 @@ export interface KovaApi {
   listTasks(): Promise<Task[]>
   getTask(taskId: string): Promise<TaskWithDetails | null>
   startTask(input: StartTaskInput): Promise<Task>
+  updateTask(input: UpdateTaskInput): Promise<Task>
   continueTask(input: ContinueTaskInput): Promise<Task>
   retryTask(taskId: string): Promise<Task>
   cancelTask(taskId: string): Promise<void>

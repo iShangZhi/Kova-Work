@@ -4,14 +4,14 @@
     "PingFang SC", "Noto Sans CJK SC", "Microsoft YaHei", sans-serif;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
-  --accent: #7167ff;
+  --accent: #2f81f7;
   --accent-contrast: #ffffff;
-  --success: #42b986;
-  --danger: #e86972;
-  --warning: #d79b43;
+  --success: #2da56f;
+  --danger: #d9535f;
+  --warning: #c8872c;
 }
 
-:root[data-accent="blue"] { --accent: #3984ff; }
+:root[data-accent="blue"] { --accent: #2f81f7; }
 :root[data-accent="green"] { --accent: #25a97f; }
 :root[data-accent="orange"] { --accent: #e67836; }
 :root[data-accent="rose"] { --accent: #df5d7d; }
@@ -19,34 +19,34 @@
 :root,
 :root[data-theme="dark"] {
   color-scheme: dark;
-  --background: #0f1012;
-  --sidebar: rgba(20, 21, 24, 0.94);
-  --surface: #18191d;
-  --surface-raised: #1d1f24;
-  --surface-hover: #23252b;
-  --border: #292b31;
-  --border-strong: #373943;
-  --text: #e8e9ec;
-  --text-secondary: #c5c7ce;
-  --muted: #838691;
-  --subtle: #656873;
+  --background: #121315;
+  --sidebar: #191a1c;
+  --surface: #1b1c1f;
+  --surface-raised: #222327;
+  --surface-hover: #28292d;
+  --border: #303136;
+  --border-strong: #3b3d43;
+  --text: #f0f0f1;
+  --text-secondary: #c8c9cc;
+  --muted: #8b8d93;
+  --subtle: #686a71;
   --shadow: rgba(0, 0, 0, 0.22);
 }
 
 :root[data-theme="light"] {
   color-scheme: light;
-  --background: #f5f6f8;
-  --sidebar: rgba(246, 247, 249, 0.96);
+  --background: #ffffff;
+  --sidebar: #f7f7f8;
   --surface: #ffffff;
-  --surface-raised: #f1f2f5;
-  --surface-hover: #e9ebef;
-  --border: #dfe1e7;
-  --border-strong: #cfd2da;
-  --text: #1e2025;
-  --text-secondary: #454952;
-  --muted: #737782;
-  --subtle: #9599a3;
-  --shadow: rgba(28, 31, 40, 0.1);
+  --surface-raised: #f4f4f5;
+  --surface-hover: #ececed;
+  --border: #e5e5e7;
+  --border-strong: #d7d7da;
+  --text: #242426;
+  --text-secondary: #4a4a4e;
+  --muted: #77777d;
+  --subtle: #9a9aa0;
+  --shadow: rgba(28, 29, 32, 0.09);
 }
 
 * { box-sizing: border-box; }
@@ -57,9 +57,7 @@ body {
   min-height: 100vh;
   overflow: hidden;
   color: var(--text);
-  background:
-    radial-gradient(circle at 72% -20%, color-mix(in srgb, var(--accent) 13%, transparent), transparent 38%),
-    var(--background);
+  background: var(--background);
   font-size: 14px;
   letter-spacing: -0.012em;
   line-height: 1.5;
@@ -617,6 +615,44 @@ button { color: inherit; }
   border-radius: 18px;
   background: var(--surface);
   box-shadow: 0 24px 70px rgba(0, 0, 0, 0.2);
+}
+
+.rename-task-modal {
+  display: grid;
+  width: min(440px, calc(100vw - 48px));
+  gap: 18px;
+  padding: 20px;
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--surface);
+  box-shadow: 0 24px 70px rgba(0, 0, 0, 0.2);
+}
+
+.rename-task-modal label {
+  display: grid;
+  gap: 7px;
+}
+
+.rename-task-modal label > span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 560;
+}
+
+.rename-task-modal input {
+  width: 100%;
+  min-height: 40px;
+  padding: 0 11px;
+  border: 1px solid var(--border-strong);
+  border-radius: 9px;
+  outline: 0;
+  background: var(--surface);
+  color: var(--text);
+}
+
+.rename-task-modal input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent) 10%, transparent);
 }
 
 .create-project-title {
@@ -1242,6 +1278,34 @@ button { color: inherit; }
 .session-copy small {
   color: var(--subtle);
   font-size: 11px;
+}
+
+.archived-session-label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 12px 7px 2px;
+  color: var(--subtle);
+  font-size: 10px;
+}
+
+.archived-session-label svg {
+  width: 12px;
+  height: 12px;
+}
+
+.session-nav-item.archived {
+  opacity: 0.68;
+}
+
+.session-nav-item.archived .session-item {
+  grid-template-columns: 14px minmax(0, 1fr);
+}
+
+.session-nav-item.archived .session-item > svg {
+  width: 13px;
+  height: 13px;
+  color: var(--subtle);
 }
 
 .status-pip {
@@ -1882,6 +1946,67 @@ button { color: inherit; }
   gap: 8px;
 }
 
+.task-action-menu-wrap {
+  position: relative;
+}
+
+.task-action-menu {
+  position: absolute;
+  z-index: 80;
+  top: calc(100% + 7px);
+  right: 0;
+  display: grid;
+  width: 210px;
+  padding: 6px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  box-shadow: 0 14px 38px var(--shadow);
+}
+
+.task-action-menu button {
+  display: flex;
+  min-height: 34px;
+  align-items: center;
+  gap: 9px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.task-action-menu button:hover:not(:disabled) {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
+.task-action-menu button:disabled {
+  cursor: default;
+  opacity: 0.42;
+}
+
+.task-action-menu button svg {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+  color: var(--muted);
+}
+
+.task-action-separator {
+  height: 1px;
+  margin: 5px 4px;
+  background: var(--border);
+}
+
+.icon-button.active {
+  background: var(--surface-hover);
+  color: var(--text);
+}
+
 .ghost-button,
 .icon-button {
   display: flex;
@@ -2243,6 +2368,64 @@ button { color: inherit; }
   background: transparent;
   font-size: 12px;
   white-space: pre;
+}
+
+.mermaid-diagram,
+.mermaid-loading,
+.mermaid-error {
+  margin: 14px 0;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+}
+
+.mermaid-diagram {
+  min-height: 120px;
+  padding: 18px;
+  overflow: auto;
+}
+
+.mermaid-diagram img {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: auto;
+}
+
+.event-markdown pre:has(.mermaid-diagram),
+.event-markdown pre:has(.mermaid-loading),
+.event-markdown pre:has(.mermaid-error) {
+  padding: 0;
+  border: 0;
+  background: transparent;
+  overflow: visible;
+  white-space: normal;
+}
+
+.mermaid-loading {
+  padding: 28px;
+  color: var(--muted);
+  font-size: 12px;
+  text-align: center;
+}
+
+.mermaid-error {
+  display: grid;
+  gap: 5px;
+  padding: 12px 14px;
+  border-color: color-mix(in srgb, var(--danger) 35%, var(--border));
+  background: color-mix(in srgb, var(--danger) 6%, var(--surface));
+}
+
+.mermaid-error strong {
+  color: var(--danger);
+  font-size: 12px;
+}
+
+.mermaid-error span {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
 }
 
 .event-markdown a {
@@ -2842,7 +3025,7 @@ button { color: inherit; }
   transition: transform 140ms ease;
 }
 
-.permission-settings > button.active i { background: #2f98ff; }
+.permission-settings > button.active i { background: var(--accent); }
 .permission-settings > button.active i::after { transform: translateX(13px); }
 
 .settings-control-row {

@@ -12,6 +12,7 @@ import type {
   StartSessionInput,
   StartTaskInput,
   TaskEvent,
+  UpdateTaskInput,
   UpdateWorkspaceInput,
   KovaApi
 } from '../shared/contracts'
@@ -41,6 +42,7 @@ const api: KovaApi = {
   listTasks: () => ipcRenderer.invoke('tasks:list'),
   getTask: (taskId: string) => ipcRenderer.invoke('tasks:get', taskId),
   startTask: (input: StartTaskInput) => ipcRenderer.invoke('tasks:start', input),
+  updateTask: (input: UpdateTaskInput) => ipcRenderer.invoke('tasks:update', input),
   continueTask: (input: ContinueTaskInput) => ipcRenderer.invoke('tasks:continue', input),
   retryTask: (taskId: string) => ipcRenderer.invoke('tasks:retry', taskId),
   cancelTask: (taskId: string) => ipcRenderer.invoke('tasks:cancel', taskId),

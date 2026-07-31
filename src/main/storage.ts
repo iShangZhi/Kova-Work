@@ -581,7 +581,10 @@ export class SessionStore {
 
   async listTasks(): Promise<Task[]> {
     await this.load()
-    return [...(this.state.tasks ?? [])].sort((a, b) => b.updatedAt.localeCompare(a.updatedAt))
+    return [...(this.state.tasks ?? [])].sort((a, b) => {
+      if (Boolean(a.pinned) !== Boolean(b.pinned)) return a.pinned ? -1 : 1
+      return b.updatedAt.localeCompare(a.updatedAt)
+    })
   }
 
   async getTask(taskId: string): Promise<TaskWithDetails | null> {
@@ -606,6 +609,25 @@ export class SessionStore {
     if (index >= 0) this.state.tasks[index] = task
     else this.state.tasks.push(task)
     await this.flush()
+  }
+
+  async updateTask(input: { id: string; title?: string; pinned?: boolean; archived?: boolean }): Promise<Task> {
+    await this.load()
+    const task = (this.state.tasks ?? []).find((item) => item.id === input.id)
+    if (!task) throw new Error('找不到对应任务')
+    if (input.title !== undefined) {
+      const title = input.title.trim()
+      if (!title) throw new Error('任务名称不能为空')
+      task.title = title.slice(0, 120)
+    }
+    if (input.pinned !== undefined) task.pinned = input.pinned
+    if (input.archived !== undefined) {
+      if (input.archived && task.status === 'running') throw new Error('请先停止正在运行的任务')
+      task.archivedAt = input.archived ? new Date().toISOString() : undefined
+    }
+    task.updatedAt = new Date().toISOString()
+    await this.flush()
+    return task
   }
 
   async deleteTask(taskId: string): Promise<void> {

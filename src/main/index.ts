@@ -20,6 +20,7 @@ import type {
   SaveClaudeWorkflowProfileInput,
   StartSessionInput,
   StartTaskInput,
+  UpdateTaskInput,
   UpdateWorkspaceInput
 } from '../shared/contracts'
 
@@ -119,6 +120,7 @@ if (!hasSingleInstanceLock) {
   ipcMain.handle('tasks:list', () => store.listTasks())
   ipcMain.handle('tasks:get', (_, taskId: string) => store.getTask(taskId))
   ipcMain.handle('tasks:start', (_, input: StartTaskInput) => taskManager.start(input))
+  ipcMain.handle('tasks:update', (_, input: UpdateTaskInput) => store.updateTask(input))
   ipcMain.handle('tasks:continue', (_, input: ContinueTaskInput) => taskManager.continue(input))
   ipcMain.handle('tasks:retry', (_, taskId: string) => taskManager.retry(taskId))
   ipcMain.handle('tasks:cancel', (_, taskId: string) => taskManager.cancel(taskId))

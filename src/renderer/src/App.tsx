@@ -1,13 +1,15 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import ReactMarkdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import {
+  Archive,
   ArrowLeft,
   BookOpen,
   Braces,
   BriefcaseBusiness,
   ChevronRight,
   CirclePlus,
+  Copy,
   Cpu,
   Folder,
   FolderOpen,
@@ -15,6 +17,7 @@ import {
   Globe2,
   GraduationCap,
   Heart,
+  MessageSquarePlus,
   MoreHorizontal,
   Palette,
   Pencil,
@@ -51,7 +54,7 @@ import packageInfo from '../../../package.json'
 type ViewId = 'today' | 'projects' | 'tasks' | 'agents' | 'plugins' | 'settings'
 type ThemeMode = 'dark' | 'light'
 type SettingsSectionId = 'general' | 'models' | 'appearance' | 'extensions'
-type TaskFilter = 'all' | 'running' | 'completed' | 'failed'
+type TaskFilter = 'all' | 'running' | 'completed' | 'failed' | 'archived'
 type ActivityStatus = TaskStatus
 
 interface ActivityItem {
@@ -63,6 +66,8 @@ interface ActivityItem {
   workspaceLabel: string
   source: string
   status: ActivityStatus
+  pinned: boolean
+  archived: boolean
   updatedAt: string
 }
 
@@ -188,6 +193,9 @@ export function App(): React.JSX.Element {
   const [prompt, setPrompt] = useState('')
   const [error, setError] = useState('')
   const [taskFilter, setTaskFilter] = useState<TaskFilter>('all')
+  const [taskMenuOpen, setTaskMenuOpen] = useState(false)
+  const [showRenameTask, setShowRenameTask] = useState(false)
+  const [taskRenameTitle, setTaskRenameTitle] = useState('')
   const [expandedPluginId, setExpandedPluginId] = useState<string | null>(null)
   const [projectsExpanded, setProjectsExpanded] = useState(true)
   const [expandedProjectPaths, setExpandedProjectPaths] = useState<string[]>([])
@@ -225,17 +233,25 @@ export function App(): React.JSX.Element {
         workspaceLabel: taskWorkspace?.name ?? '未关联目录',
         source: taskModel?.name ?? 'AI 编排',
         status: task.status,
+        pinned: Boolean(task.pinned),
+        archived: Boolean(task.archivedAt),
         updatedAt: task.updatedAt
       }
-    }).sort((a, b) => Date.parse(b.updatedAt) - Date.parse(a.updatedAt))
+    }).sort((a, b) =>
+      Number(b.pinned) - Number(a.pinned) ||
+      Date.parse(b.updatedAt) - Date.parse(a.updatedAt)
+    )
   }, [tasks, workspaces, modelProfiles])
+
+  const visibleActivityItems = activityItems.filter((item) => !item.archived)
+  const archivedActivityItems = activityItems.filter((item) => item.archived)
 
   const projects = useMemo(() => {
     const visibleWorkspaces = workspaces.filter((item) => !item.removedAt)
     const grouped = new Map<string, { workspace?: Workspace; name: string; items: ActivityItem[] }>(
       visibleWorkspaces.map((item) => [item.path, { workspace: item, name: item.name, items: [] }])
     )
-    activityItems.filter((item) => grouped.has(item.workspacePath)).forEach((item) => {
+    visibleActivityItems.filter((item) => grouped.has(item.workspacePath)).forEach((item) => {
       const current = grouped.get(item.workspacePath)!
       current.items.push(item)
       grouped.set(item.workspacePath, current)
@@ -249,14 +265,15 @@ export function App(): React.JSX.Element {
       pinned: project.workspace?.pinned,
       items: project.items
     })).sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)))
-  }, [activityItems, workspaces])
+  }, [visibleActivityItems, workspaces])
 
-  const runningCount = activityItems.filter((item) => item.status === 'running').length
-  const completedCount = activityItems.filter((item) => item.status === 'completed').length
-  const attentionItems = activityItems.filter((item) => item.status === 'failed')
+  const runningCount = visibleActivityItems.filter((item) => item.status === 'running').length
+  const completedCount = visibleActivityItems.filter((item) => item.status === 'completed').length
+  const attentionItems = visibleActivityItems.filter((item) => item.status === 'failed')
   const attentionCount = attentionItems.length
-  const filteredActivities =
-    taskFilter === 'all' ? activityItems : activityItems.filter((item) => item.status === taskFilter)
+  const filteredActivities = taskFilter === 'archived'
+    ? activityItems.filter((item) => item.archived)
+    : visibleActivityItems.filter((item) => taskFilter === 'all' || item.status === taskFilter)
   const nativeCapabilities = capabilities.filter((item) => item.pluginId === 'com.kova.core-tools')
   const visibleSkills = useMemo(() => {
     const pluginById = new Map(plugins.map((plugin) => [plugin.id, plugin]))
@@ -312,6 +329,17 @@ export function App(): React.JSX.Element {
     window.addEventListener('pointerdown', closeMenu)
     return () => window.removeEventListener('pointerdown', closeMenu)
   }, [projectMenuId])
+
+  useEffect(() => {
+    if (!taskMenuOpen) return
+    const closeMenu = (event: PointerEvent): void => {
+      const target = event.target
+      if (target instanceof Element && target.closest('.task-action-menu-wrap')) return
+      setTaskMenuOpen(false)
+    }
+    window.addEventListener('pointerdown', closeMenu)
+    return () => window.removeEventListener('pointerdown', closeMenu)
+  }, [taskMenuOpen])
 
   useEffect(() => {
     void Promise.all([
@@ -644,6 +672,59 @@ export function App(): React.JSX.Element {
     }
   }
 
+  async function updateActiveTask(input: { title?: string; pinned?: boolean; archived?: boolean }): Promise<void> {
+    if (!activeTask) return
+    const updated = await window.kova.updateTask({ id: activeTask.task.id, ...input })
+    setActiveTask((current) => current ? { ...current, task: updated } : current)
+    setTasks((current) => current.map((task) => task.id === updated.id ? updated : task))
+    setTaskMenuOpen(false)
+  }
+
+  async function renameActiveTask(event: React.FormEvent): Promise<void> {
+    event.preventDefault()
+    const title = taskRenameTitle.trim()
+    if (!title) return
+    try {
+      await updateActiveTask({ title })
+      setShowRenameTask(false)
+    } catch (renameError) {
+      window.alert(renameError instanceof Error ? renameError.message : String(renameError))
+    }
+  }
+
+  async function toggleActiveTaskArchive(): Promise<void> {
+    if (!activeTask) return
+    try {
+      await updateActiveTask({ archived: !activeTask.task.archivedAt })
+    } catch (archiveError) {
+      window.alert(archiveError instanceof Error ? archiveError.message : String(archiveError))
+    }
+  }
+
+  async function copyTaskContent(kind: 'title' | 'reply'): Promise<void> {
+    if (!activeTask) return
+    const latestReply = [...activeTask.events].reverse().find((event) => event.type === 'model_message')?.text
+    const text = kind === 'title' ? activeTask.task.title : latestReply
+    if (!text) {
+      window.alert('当前任务还没有可复制的模型回复。')
+      return
+    }
+    await navigator.clipboard.writeText(text)
+    setTaskMenuOpen(false)
+  }
+
+  function continueInNewTask(): void {
+    if (!activeTask) return
+    const current = activeTask
+    setWorkspace(current.workspace?.path ?? workspace)
+    setModelProfileId(current.task.modelProfileId)
+    setPermissionMode(current.task.permissionMode)
+    setActiveTask(null)
+    setPrompt(`继续处理“${current.task.title}”：\n`)
+    setTaskMenuOpen(false)
+    setError('')
+  }
+
   async function cancel(): Promise<void> {
     if (!activeTask) return
     await window.kova.cancelTask(activeTask.task.id)
@@ -871,8 +952,8 @@ export function App(): React.JSX.Element {
           </button>
           {recentExpanded && (
             <div className="session-list">
-              {activityItems.length === 0 && <p className="empty-copy">还没有任务</p>}
-              {activityItems.slice(0, 10).map((item) => (
+              {visibleActivityItems.length === 0 && <p className="empty-copy">还没有任务</p>}
+              {visibleActivityItems.slice(0, 10).map((item) => (
                 <div
                   className={`session-nav-item ${
                     view === 'agents' &&
@@ -902,6 +983,25 @@ export function App(): React.JSX.Element {
                   </span>
                 </div>
               ))}
+              {archivedActivityItems.length > 0 && (
+                <>
+                  <div className="archived-session-label"><Archive aria-hidden="true" /><span>已归档</span></div>
+                  {archivedActivityItems.slice(0, 5).map((item) => (
+                    <div
+                      className={`session-nav-item archived ${activeTask?.task.id === item.id ? 'active' : ''}`}
+                      key={item.key}
+                    >
+                      <button className="session-item" type="button" onClick={() => void selectActivity(item)}>
+                        <Archive aria-hidden="true" />
+                        <span className="session-copy">
+                          <strong>{item.title}</strong>
+                          <small>{formatTime(item.updatedAt)}</small>
+                        </span>
+                      </button>
+                    </div>
+                  ))}
+                </>
+              )}
             </div>
           )}
         </section>
@@ -944,7 +1044,7 @@ export function App(): React.JSX.Element {
                   <div><h2>当前任务</h2><p>最近更新的开发工作</p></div>
                   <button className="text-button" type="button" onClick={() => setView('tasks')}>查看全部</button>
                 </div>
-                <ActivityTable items={activityItems.slice(0, 5)} onSelect={selectActivity} onDelete={deleteActivity} />
+                <ActivityTable items={visibleActivityItems.slice(0, 5)} onSelect={selectActivity} onDelete={deleteActivity} />
               </section>
               <section className="panel">
                 <div className="panel-heading"><div><h2>Agent 状态</h2><p>本机可用的执行能力</p></div></div>
@@ -1009,7 +1109,8 @@ export function App(): React.JSX.Element {
                     ['all', '全部'],
                     ['running', '进行中'],
                     ['completed', '已完成'],
-                    ['failed', '失败']
+                    ['failed', '失败'],
+                    ['archived', '已归档']
                   ] as Array<[TaskFilter, string]>).map(([id, label]) => (
                     <button className={taskFilter === id ? 'active' : ''} type="button" key={id} onClick={() => setTaskFilter(id)}>
                       {label}
@@ -1028,9 +1129,53 @@ export function App(): React.JSX.Element {
               <header className="conversation-header">
                 <h1>{activeTask?.task.title ?? '新建任务'}</h1>
                 <div className="header-actions">
-                  <button className="icon-button" type="button" aria-label="更多操作" title="更多操作">
-                    <MoreHorizontal aria-hidden="true" />
-                  </button>
+                  {activeTask && (
+                    <div className="task-action-menu-wrap">
+                      <button
+                        className={`icon-button ${taskMenuOpen ? 'active' : ''}`}
+                        type="button"
+                        aria-label="更多操作"
+                        title="更多操作"
+                        aria-expanded={taskMenuOpen}
+                        onClick={() => setTaskMenuOpen((open) => !open)}
+                      >
+                        <MoreHorizontal aria-hidden="true" />
+                      </button>
+                      {taskMenuOpen && (
+                        <div className="task-action-menu">
+                          <button type="button" onClick={() => void updateActiveTask({ pinned: !activeTask.task.pinned })}>
+                            {activeTask.task.pinned ? <PinOff aria-hidden="true" /> : <Pin aria-hidden="true" />}
+                            <span>{activeTask.task.pinned ? '取消置顶' : '置顶任务'}</span>
+                          </button>
+                          <button type="button" onClick={() => {
+                            setTaskRenameTitle(activeTask.task.title)
+                            setShowRenameTask(true)
+                            setTaskMenuOpen(false)
+                          }}>
+                            <Pencil aria-hidden="true" />
+                            <span>重命名任务</span>
+                          </button>
+                          <button type="button" disabled={isRunning} onClick={() => void toggleActiveTaskArchive()}>
+                            <Archive aria-hidden="true" />
+                            <span>{activeTask.task.archivedAt ? '取消归档' : '归档任务'}</span>
+                          </button>
+                          <div className="task-action-separator" />
+                          <button type="button" onClick={() => void copyTaskContent('title')}>
+                            <Copy aria-hidden="true" />
+                            <span>复制任务标题</span>
+                          </button>
+                          <button type="button" onClick={() => void copyTaskContent('reply')}>
+                            <Copy aria-hidden="true" />
+                            <span>复制最近回复</span>
+                          </button>
+                          <button type="button" onClick={continueInNewTask}>
+                            <MessageSquarePlus aria-hidden="true" />
+                            <span>在新任务中继续</span>
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
                   {isRunning && (
                     <button className="ghost-button danger" type="button" onClick={() => void cancel()}>
                       停止
@@ -1072,7 +1217,7 @@ export function App(): React.JSX.Element {
                               <time>{formatTime(item.createdAt)}</time>
                             </div>
                           )}
-                          <TaskEventBody event={item} />
+                          <TaskEventBody event={item} themeMode={themeMode} />
                         </div>
                       </article>
                     )
@@ -1354,6 +1499,34 @@ export function App(): React.JSX.Element {
               <button className="project-submit-button" type="submit" disabled={savingProject || !editProjectName.trim() || editProjectSourceFolders.length === 0}>
                 {savingProject ? '保存中…' : '保存'}
               </button>
+            </div>
+          </form>
+        </div>
+      )}
+      {showRenameTask && activeTask && (
+        <div className="modal-backdrop" role="presentation" onMouseDown={(event) => {
+          if (event.target === event.currentTarget) setShowRenameTask(false)
+        }}>
+          <form className="rename-task-modal" onSubmit={(event) => void renameActiveTask(event)}>
+            <div className="create-project-title">
+              <h2>重命名任务</h2>
+              <button type="button" aria-label="关闭" onClick={() => setShowRenameTask(false)}>
+                <X aria-hidden="true" />
+              </button>
+            </div>
+            <label>
+              <span>任务名称</span>
+              <input
+                autoFocus
+                value={taskRenameTitle}
+                maxLength={120}
+                onChange={(event) => setTaskRenameTitle(event.target.value)}
+                aria-label="任务名称"
+              />
+            </label>
+            <div className="create-project-actions">
+              <button className="project-cancel-button" type="button" onClick={() => setShowRenameTask(false)}>取消</button>
+              <button className="project-submit-button" type="submit" disabled={!taskRenameTitle.trim()}>保存</button>
             </div>
           </form>
         </div>
@@ -1951,7 +2124,51 @@ function CapabilityEventGroupView({ group }: { group: CapabilityEventGroup }): R
   )
 }
 
-function TaskEventBody({ event }: { event: TaskEvent }): React.JSX.Element {
+function MermaidDiagram({ source, themeMode }: { source: string; themeMode: ThemeMode }): React.JSX.Element {
+  const renderId = useRef(`kova-mermaid-${Math.random().toString(36).slice(2)}`)
+  const [svg, setSvg] = useState('')
+  const [error, setError] = useState('')
+
+  useEffect(() => {
+    let cancelled = false
+    setSvg('')
+    setError('')
+
+    void import('mermaid').then(async ({ default: mermaid }) => {
+      mermaid.initialize({
+        startOnLoad: false,
+        securityLevel: 'strict',
+        theme: themeMode === 'dark' ? 'dark' : 'neutral',
+        fontFamily: 'Inter, "SF Pro Text", "PingFang SC", sans-serif'
+      })
+      const result = await mermaid.render(`${renderId.current}-${themeMode}`, source)
+      if (!cancelled) setSvg(result.svg)
+    }).catch((cause) => {
+      if (!cancelled) setError(cause instanceof Error ? cause.message : String(cause))
+    })
+
+    return () => {
+      cancelled = true
+    }
+  }, [source, themeMode])
+
+  if (error) {
+    return (
+      <div className="mermaid-error">
+        <strong>图表无法渲染</strong>
+        <span>{error}</span>
+      </div>
+    )
+  }
+  if (!svg) return <div className="mermaid-loading">正在绘制图表…</div>
+  return (
+    <div className="mermaid-diagram">
+      <img src={`data:image/svg+xml;charset=utf-8,${encodeURIComponent(svg)}`} alt="Mermaid 图表" />
+    </div>
+  )
+}
+
+function TaskEventBody({ event, themeMode }: { event: TaskEvent; themeMode: ThemeMode }): React.JSX.Element {
   const call = event.type === 'capability_call' ? event.metadata?.call : undefined
   const result = event.type === 'capability_result' ? event.metadata?.result : undefined
   const details = call ?? result
@@ -1960,7 +2177,19 @@ function TaskEventBody({ event }: { event: TaskEvent }): React.JSX.Element {
     <>
       {event.type === 'model_message' ? (
         <div className="event-markdown">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{event.text}</ReactMarkdown>
+          <ReactMarkdown
+            remarkPlugins={[remarkGfm]}
+            components={{
+              code({ className, children, ...props }) {
+                if (className === 'language-mermaid') {
+                  return <MermaidDiagram source={String(children).replace(/\n$/, '')} themeMode={themeMode} />
+                }
+                return <code className={className} {...props}>{children}</code>
+              }
+            }}
+          >
+            {event.text}
+          </ReactMarkdown>
         </div>
       ) : (
         <p>{event.type === 'completed' ? '任务已完成' : event.text}</p>
