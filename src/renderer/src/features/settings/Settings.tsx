@@ -1,6 +1,5 @@
 import { useState } from 'react'
 import { ArrowLeft, Cpu, Search, ShieldCheck, SunMoon, Wrench } from 'lucide-react'
-import { useNavigate } from 'react-router-dom'
 import { useModelStore } from '../../store/models'
 import { useUIStore } from '../../store/ui'
 import { ModelSettings } from './ModelSettings'
@@ -22,6 +21,7 @@ interface SettingsProps {
   capabilities: RegisteredCapability[]
   skills: SkillDefinition[]
   mcpServers: McpServerDefinition[]
+  onBack: () => void
   onPluginEnabled: (id: string, enabled: boolean) => Promise<void>
   onSkillEnabled: (id: string, enabled: boolean) => Promise<void>
   onSkillImported: (skill: SkillDefinition) => void
@@ -32,11 +32,11 @@ export function Settings({
   capabilities,
   skills,
   mcpServers,
+  onBack,
   onPluginEnabled,
   onSkillEnabled,
   onSkillImported
 }: SettingsProps) {
-  const navigate = useNavigate()
   const { profiles, defaultProfileId, setDefaultProfile } = useModelStore()
   const { themeMode, defaultPermissionMode, setThemeMode, setDefaultPermissionMode } = useUIStore()
   const [section, setSection] = useState<SettingsSectionId>('general')
@@ -59,7 +59,7 @@ export function Settings({
     <div className="settings-workspace">
       <aside className="settings-sidebar">
         <div className="settings-window-drag" />
-        <button className="settings-back" type="button" onClick={() => navigate('/')}>
+        <button className="settings-back" type="button" onClick={onBack}>
           <ArrowLeft aria-hidden="true" />
           <span>返回应用</span>
         </button>

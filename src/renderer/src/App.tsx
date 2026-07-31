@@ -1,6 +1,6 @@
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
 import { useEffect, useMemo, useState } from 'react'
 import { Sidebar } from './components/layout/Sidebar'
+import type { ViewId } from './components/layout/Sidebar'
 import { TaskCreate } from './features/tasks/TaskCreate'
 import { TaskDetail } from './features/tasks/TaskDetail'
 import { TaskList } from './features/tasks/TaskList'
@@ -27,13 +27,14 @@ export function App() {
   const { fetchProfiles, profiles } = useModelStore()
   const { themeMode } = useUIStore()
 
+  const [view, setView] = useState<ViewId>('chat')
   const [agents, setAgents] = useState<AgentDefinition[]>([])
   const [plugins, setPlugins] = useState<PluginDefinition[]>([])
   const [capabilities, setCapabilities] = useState<RegisteredCapability[]>([])
   const [skills, setSkills] = useState<SkillDefinition[]>([])
   const [mcpServers, setMcpServers] = useState<McpServerDefinition[]>([])
 
-  // --- Derived: activity items (tasks → UI rows) ---
+  // --- Derived data ---
   const activityItems = useMemo<ActivityItem[]>(() => {
     const workspaceById = new Map(workspaces.map((w) => [w.id, w]))
     const modelById = new Map(profiles.map((m) => [m.id, m]))
@@ -59,30 +60,19 @@ export function App() {
     )
   }, [tasks, workspaces, profiles])
 
-  const visibleItems = activityItems.filter((i) => !i.archived)
-
-  // --- Derived: projects (workspaces → project cards) ---
+  // --- Derived: projects ---
   const projects = useMemo(() => {
-    const visibleWorkspaces = workspaces.filter((w) => !w.removedAt)
-    const grouped = new Map<string, { name: string; items: ActivityItem[] }>(
-      visibleWorkspaces.map((w) => [w.path, { name: w.name, items: [] }])
-    )
-    visibleItems.filter((i) => grouped.has(i.workspacePath)).forEach((i) => {
+    const visible = workspaces.filter((w) => !w.removedAt)
+    const grouped = new Map(visible.map((w) => [w.path, { name: w.name, items: [] as ActivityItem[] }]))
+    activityItems.filter((i) => !i.archived && grouped.has(i.workspacePath)).forEach((i) => {
       grouped.get(i.workspacePath)!.items.push(i)
     })
     return [...grouped.entries()].map(([path, g]) => {
       const ws = workspaces.find((w) => w.path === path)
-      return {
-        id: ws?.id ?? path,
-        path,
-        name: g.name || (path.split('/').filter(Boolean).at(-1) ?? path),
-        icon: ws?.icon,
-        color: ws?.color,
-        pinned: ws?.pinned,
-        items: g.items
-      }
+      return { id: ws?.id ?? path, path, name: g.name || (path.split('/').filter(Boolean).at(-1) ?? path),
+        icon: ws?.icon, color: ws?.color, pinned: ws?.pinned, items: g.items }
     }).sort((a, b) => Number(Boolean(b.pinned)) - Number(Boolean(a.pinned)))
-  }, [visibleItems, workspaces])
+  }, [activityItems, workspaces])
 
   // --- Init ---
   useEffect(() => {
@@ -105,10 +95,7 @@ export function App() {
   // --- Task event subscription ---
   useEffect(() => {
     const unsub = window.kova.onTaskEvent((event) => {
-      if (activeTask?.task.id === event.taskId) {
-        // Refresh the active task when events arrive
-        void selectTask(event.taskId)
-      }
+      if (activeTask?.task.id === event.taskId) void selectTask(event.taskId)
       void fetchTasks()
     })
     return unsub
@@ -117,25 +104,23 @@ export function App() {
   // --- Handlers ---
   function handleNewTask() {
     clearActiveTask()
+    setView('chat')
   }
 
   async function handleSelectTask(taskId: string) {
     await selectTask(taskId)
+    setView('chat')
   }
 
   async function handleDeleteTask(taskId: string) {
     const task = tasks.find((t) => t.id === taskId)
-    if (task?.status === 'running') {
-      alert('请先停止正在运行的任务，再删除记录。')
-      return
-    }
-    if (confirm(`确定删除"${task?.title ?? '这个任务'}"吗？`)) {
-      await deleteTask(taskId)
-    }
+    if (task?.status === 'running') { alert('请先停止正在运行的任务，再删除记录。'); return }
+    if (confirm(`确定删除"${task?.title ?? '这个任务'}"吗？`)) await deleteTask(taskId)
   }
 
   async function handleSelectActivity(item: ActivityItem) {
     await selectTask(item.id)
+    setView('chat')
   }
 
   async function handleDeleteActivity(item: ActivityItem) {
@@ -146,87 +131,83 @@ export function App() {
     const ws = workspaces.find((w) => w.path === path)
     setCurrentWorkspace(path)
     clearActiveTask()
+    setView('chat')
   }
 
+  async function handleTogglePinProject(id: string) {
+    const ws = workspaces.find((w) => w.id === id)
+    if (!ws) return
+    const updated = await window.kova.updateWorkspace({ id: ws.id, pinned: !ws.pinned })
+    fetchWorkspaces()
+  }
+
+  async function handleRemoveProject(id: string) {
+    const ws = workspaces.find((w) => w.id === id)
+    if (!ws || !confirm(`从项目列表移除"${ws.name}"吗？\n\n不会删除源码文件和历史会话。`)) return
+    await window.kova.updateWorkspace({ id: ws.id, removed: true })
+    fetchWorkspaces()
+  }
+
+  function handleRevealPath(path: string) {
+    void window.kova.revealPath(path)
+  }
+
+  function handleEditProject(_id: string) {
+    // TODO: integrate project edit modal
+  }
+
+  // --- Render ---
   return (
-    <BrowserRouter>
-      <div className="app-shell">
-        <Sidebar
-          tasks={tasks}
-          workspaces={workspaces}
-          onNewTask={handleNewTask}
-          onSelectTask={handleSelectTask}
-          onDeleteTask={handleDeleteTask}
-          activeTaskId={activeTask?.task.id ?? null}
-        />
-        <section className="workspace-shell">
-          <Routes>
-            {/* Home – agent chat or task create */}
-            <Route
-              path="/"
-              element={activeTask ? <TaskDetail /> : <TaskCreate />}
-            />
-            <Route path="/tasks/:id" element={<TaskDetail />} />
+    <div className="app-shell">
+      <Sidebar
+        view={view}
+        onNavigate={setView}
+        tasks={tasks}
+        workspaces={workspaces}
+        activityItems={activityItems}
+        activeTaskId={activeTask?.task.id ?? null}
+        onNewTask={handleNewTask}
+        onSelectTask={handleSelectTask}
+        onDeleteTask={handleDeleteTask}
+        onTogglePinProject={handleTogglePinProject}
+        onRemoveProject={handleRemoveProject}
+        onRevealPath={handleRevealPath}
+        onEditProject={handleEditProject}
+        onOpenProject={handleOpenProject}
+      />
 
-            {/* Tasks list */}
-            <Route
-              path="/tasks"
-              element={
-                <TaskList
-                  items={activityItems}
-                  onSelect={handleSelectActivity}
-                  onDelete={handleDeleteActivity}
-                />
-              }
-            />
-
-            {/* Projects */}
-            <Route
-              path="/projects"
-              element={
-                <ProjectList
-                  projects={projects}
-                  onSelectItem={handleSelectActivity}
-                  onOpenProject={handleOpenProject}
-                />
-              }
-            />
-
-            {/* Plugins / Skills */}
-            <Route
-              path="/plugins"
-              element={<Plugins plugins={plugins} capabilities={capabilities} skills={skills} />}
-            />
-
-            {/* Settings */}
-            <Route
-              path="/settings"
-              element={
-                <Settings
-                  plugins={plugins}
-                  capabilities={capabilities}
-                  skills={skills}
-                  mcpServers={mcpServers}
-                  onPluginEnabled={async (id, enabled) => {
-                    const result = await window.kova.setPluginEnabled(id, enabled)
-                    setPlugins(result.plugins)
-                  }}
-                  onSkillEnabled={async (id, enabled) => {
-                    const updated = await window.kova.setSkillEnabled(id, enabled)
-                    setSkills((current) => current.map((s) => (s.id === id ? updated : s)))
-                  }}
-                  onSkillImported={(skill) =>
-                    setSkills((current) => [skill, ...current.filter((s) => s.id !== skill.id)])
-                  }
-                />
-              }
-            />
-
-            {/* Catch-all */}
-            <Route path="*" element={<Navigate to="/" replace />} />
-          </Routes>
-        </section>
-      </div>
-    </BrowserRouter>
+      <section className="workspace-shell">
+        {view === 'chat' && (
+          activeTask ? <TaskDetail /> : <TaskCreate />
+        )}
+        {view === 'tasks' && (
+          <TaskList items={activityItems} onSelect={handleSelectActivity} onDelete={handleDeleteActivity} />
+        )}
+        {view === 'projects' && (
+          <ProjectList projects={projects} onSelectItem={handleSelectActivity} onOpenProject={handleOpenProject} />
+        )}
+        {view === 'plugins' && (
+          <Plugins plugins={plugins} capabilities={capabilities} skills={skills} />
+        )}
+        {view === 'settings' && (
+          <Settings
+            plugins={plugins}
+            capabilities={capabilities}
+            skills={skills}
+            mcpServers={mcpServers}
+            onBack={() => setView('chat')}
+            onPluginEnabled={async (id, enabled) => {
+              const result = await window.kova.setPluginEnabled(id, enabled)
+              setPlugins(result.plugins)
+            }}
+            onSkillEnabled={async (id, enabled) => {
+              const updated = await window.kova.setSkillEnabled(id, enabled)
+              setSkills((c) => c.map((s) => (s.id === id ? updated : s)))
+            }}
+            onSkillImported={(skill) => setSkills((c) => [skill, ...c.filter((s) => s.id !== skill.id)])}
+          />
+        )}
+      </section>
+    </div>
   )
 }
