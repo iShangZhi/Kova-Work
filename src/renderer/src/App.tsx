@@ -156,7 +156,29 @@ export function App() {
     // TODO: integrate project edit modal
   }
 
-  // --- Render ---
+  // --- Settings: full-page replacement (no main sidebar) ---
+  if (view === 'settings') {
+    return (
+      <Settings
+        plugins={plugins}
+        capabilities={capabilities}
+        skills={skills}
+        mcpServers={mcpServers}
+        onBack={() => setView('chat')}
+        onPluginEnabled={async (id, enabled) => {
+          const result = await window.kova.setPluginEnabled(id, enabled)
+          setPlugins(result.plugins)
+        }}
+        onSkillEnabled={async (id, enabled) => {
+          const updated = await window.kova.setSkillEnabled(id, enabled)
+          setSkills((c) => c.map((s) => (s.id === id ? updated : s)))
+        }}
+        onSkillImported={(skill) => setSkills((c) => [skill, ...c.filter((s) => s.id !== skill.id)])}
+      />
+    )
+  }
+
+  // --- Main layout ---
   return (
     <div className="app-shell">
       <Sidebar
@@ -188,24 +210,6 @@ export function App() {
         )}
         {view === 'plugins' && (
           <Plugins plugins={plugins} capabilities={capabilities} skills={skills} />
-        )}
-        {view === 'settings' && (
-          <Settings
-            plugins={plugins}
-            capabilities={capabilities}
-            skills={skills}
-            mcpServers={mcpServers}
-            onBack={() => setView('chat')}
-            onPluginEnabled={async (id, enabled) => {
-              const result = await window.kova.setPluginEnabled(id, enabled)
-              setPlugins(result.plugins)
-            }}
-            onSkillEnabled={async (id, enabled) => {
-              const updated = await window.kova.setSkillEnabled(id, enabled)
-              setSkills((c) => c.map((s) => (s.id === id ? updated : s)))
-            }}
-            onSkillImported={(skill) => setSkills((c) => [skill, ...c.filter((s) => s.id !== skill.id)])}
-          />
         )}
       </section>
     </div>
