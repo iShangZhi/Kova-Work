@@ -1,12 +1,14 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
-import { useEffect } from 'react'
+import { useEffect, useState } from 'react'
 import { Sidebar } from './components/layout/Sidebar'
 import { TaskCreate } from './features/tasks/TaskCreate'
 import { TaskDetail } from './features/tasks/TaskDetail'
+import { Settings } from './features/settings/Settings'
 import { useTaskStore } from './store/tasks'
 import { useWorkspaceStore } from './store/workspaces'
 import { useModelStore } from './store/models'
 import { useUIStore } from './store/ui'
+import type { PluginDefinition, RegisteredCapability, SkillDefinition, McpServerDefinition } from '../../shared/contracts'
 import './styles.css'
 
 export function App() {
@@ -14,6 +16,10 @@ export function App() {
   const { workspaces, fetchWorkspaces } = useWorkspaceStore()
   const { fetchProfiles } = useModelStore()
   const { themeMode } = useUIStore()
+  const [plugins, setPlugins] = useState<PluginDefinition[]>([])
+  const [capabilities, setCapabilities] = useState<RegisteredCapability[]>([])
+  const [skills, setSkills] = useState<SkillDefinition[]>([])
+  const [mcpServers, setMcpServers] = useState<McpServerDefinition[]>([])
 
   useEffect(() => {
     document.documentElement.dataset.theme = themeMode
@@ -23,7 +29,11 @@ export function App() {
     void Promise.all([
       fetchTasks(),
       fetchWorkspaces(),
-      fetchProfiles()
+      fetchProfiles(),
+      window.kova.listPlugins().then((result) => setPlugins(result.plugins)),
+      window.kova.listCapabilities().then(setCapabilities),
+      window.kova.listSkills().then(setSkills),
+      window.kova.listMcpServers().then(setMcpServers)
     ])
   }, [fetchTasks, fetchWorkspaces, fetchProfiles])
 
@@ -62,7 +72,26 @@ export function App() {
             <Route path="/" element={activeTask ? <TaskDetail /> : <TaskCreate />} />
             <Route path="/tasks/:id" element={<TaskDetail />} />
             <Route path="/plugins" element={<div>插件页面开发中...</div>} />
-            <Route path="/settings" element={<div>设置页面开发中...</div>} />
+            <Route
+              path="/settings"
+              element={
+                <Settings
+                  plugins={plugins}
+                  capabilities={capabilities}
+                  skills={skills}
+                  mcpServers={mcpServers}
+                  onPluginEnabled={async (id, enabled) => {
+                    const result = await window.kova.setPluginEnabled(id, enabled)
+                    setPlugins(result.plugins)
+                  }}
+                  onSkillEnabled={async (id, enabled) => {
+                    const updated = await window.kova.setSkillEnabled(id, enabled)
+                    setSkills((current) => current.map((s) => (s.id === id ? updated : s)))
+                  }}
+                  onSkillImported={(skill) => setSkills((current) => [skill, ...current.filter((s) => s.id !== skill.id)])}
+                />
+              }
+            />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </section>
