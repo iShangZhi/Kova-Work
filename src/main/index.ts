@@ -8,6 +8,7 @@ import { completeWithModel } from './model-client'
 import { CapabilityRegistry } from './core/capability-registry'
 import { ModelOrchestrator } from './core/model-orchestrator'
 import { TaskManager } from './core/task-manager'
+import { logger } from './infrastructure/logging/Logger'
 import type {
   CreateWorkspaceInput,
   ContinueTaskInput,
@@ -80,12 +81,16 @@ if (!hasSingleInstanceLock) {
   })
 
   void app.whenReady().then(async () => {
-  electronApp.setAppUserModelId('com.wiseailab.kova')
-  if (process.platform === 'darwin') {
-    const dockIcon = nativeImage.createFromPath(join(process.cwd(), 'resources/kova-icon.png'))
-    if (!dockIcon.isEmpty()) app.dock?.setIcon(dockIcon)
-  }
-  app.on('browser-window-created', (_, window) => optimizer.watchWindowShortcuts(window))
+    // Initialize logger first
+    await logger.init()
+    logger.info('Kova application starting', { version: app.getVersion(), platform: process.platform })
+
+    electronApp.setAppUserModelId('com.wiseailab.kova')
+    if (process.platform === 'darwin') {
+      const dockIcon = nativeImage.createFromPath(join(process.cwd(), 'resources/kova-icon.png'))
+      if (!dockIcon.isEmpty()) app.dock?.setIcon(dockIcon)
+    }
+    app.on('browser-window-created', (_, window) => optimizer.watchWindowShortcuts(window))
   await store.load()
   await store.reconcileInterruptedTasks()
 

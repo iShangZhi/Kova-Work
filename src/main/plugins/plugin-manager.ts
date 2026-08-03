@@ -11,6 +11,7 @@ import { builtInPlugins } from './builtin'
 import { detectPluginCli } from './detection'
 import type { RegisteredPlugin, ScannedPlugin } from './types'
 import { SessionStore } from '../storage'
+import { logger } from '../infrastructure/logging/Logger'
 
 export class PluginManager {
   private scanned = new Map<AgentId, ScannedPlugin>()
@@ -74,6 +75,18 @@ export class PluginManager {
 
     this.scanned = new Map(results.map((plugin) => [plugin.definition.agentId, plugin]))
     this.scannedAt = new Date().toISOString()
+
+    const readyCount = results.filter((p) => p.definition.status === 'ready').length
+    const missingCount = results.filter((p) => p.definition.status === 'missing').length
+    const errorCount = results.filter((p) => p.definition.status === 'error').length
+
+    logger.info('Plugin scan completed', {
+      total: results.length,
+      ready: readyCount,
+      missing: missingCount,
+      error: errorCount
+    })
+
     return this.snapshot()
   }
 

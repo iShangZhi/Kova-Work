@@ -12,6 +12,7 @@ import type {
 import { SessionStore } from '../storage'
 import { ModelOrchestrator } from './model-orchestrator'
 import { CORE_TOOLS_PLUGIN_ID } from '../tools/native-tool-registry'
+import { logger } from '../infrastructure/logging/Logger'
 
 interface RunningTask {
   task: Task
@@ -70,6 +71,14 @@ export class TaskManager {
     await this.emit(task, run, 'user_message', objective)
     const controller = new AbortController()
     this.running.set(task.id, { task, run, workspace, controller })
+
+    logger.info('Task started', {
+      taskId: task.id,
+      workspaceId: workspace.id,
+      modelProfileId: input.modelProfileId,
+      objective: objective.slice(0, 100)
+    })
+
     void this.execute(task, run, workspace, controller, objective)
     return task
   }
@@ -106,6 +115,8 @@ export class TaskManager {
     await this.store.saveTask(current.task)
     await this.store.saveTaskRun(current.run)
     await this.emit(current.task, current.run, 'system', '任务已由用户停止')
+
+    logger.info('Task cancelled', { taskId })
   }
 
   async delete(taskId: string): Promise<void> {
@@ -167,6 +178,8 @@ export class TaskManager {
     controller: AbortController,
     instruction: string
   ): Promise<void> {
+    const startTime = Date.now()
+
     try {
       const result = await this.orchestrator.run(
         task,
@@ -184,6 +197,9 @@ export class TaskManager {
       run.status = 'completed'
       run.completedAt = now
       await this.emit(task, run, 'completed', result)
+
+      const duration = Date.now() - startTime
+      logger.info('Task completed', { taskId: task.id, runId: run.id, duration })
     } catch (error) {
       if (controller.signal.aborted) return
       const now = new Date().toISOString()
@@ -193,6 +209,9 @@ export class TaskManager {
       run.completedAt = now
       run.error = error instanceof Error ? error.message : String(error)
       await this.emit(task, run, 'error', run.error)
+
+      const duration = Date.now() - startTime
+      logger.error('Task failed', error as Error, { taskId: task.id, runId: run.id, duration })
     } finally {
       await this.store.saveTask(task)
       await this.store.saveTaskRun(run)
