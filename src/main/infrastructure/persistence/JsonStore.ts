@@ -1,12 +1,16 @@
 import { app } from 'electron'
-import { readFile, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
 
 /**
  * 底层 JSON 持久化引擎
- * 职责：读写 JSON 文件、备份恢复、写队列管理
+ *
+ * 保证：
+ * - 原子写入（.tmp + rename），断电/kill 不会读到半个 JSON
+ * - 写入串行化（writeQueue）
+ * - setState 返回 Promise，可 await 到落盘完成
  */
-export class JsonStore<T extends Record<string, any>> {
+export class JsonStore<T extends object> {
   private state: T
   private loaded = false
   private loadPromise?: Promise<void>
@@ -27,10 +31,18 @@ export class JsonStore<T extends Record<string, any>> {
     return `${this.filePath}.backup`
   }
 
+  private get tempFilePath(): string {
+    return `${this.filePath}.tmp`
+  }
+
   async load(): Promise<void> {
     if (this.loaded) return
     if (!this.loadPromise) this.loadPromise = this.performLoad()
     await this.loadPromise
+  }
+
+  hasLoaded(): boolean {
+    return this.loaded
   }
 
   private async performLoad(): Promise<void> {
@@ -56,17 +68,40 @@ export class JsonStore<T extends Record<string, any>> {
     return this.state
   }
 
-  setState(updater: (state: T) => void): void {
-    if (!this.loaded) throw new Error('Store not loaded.')
-    updater(this.state)
-    this.flush()
+  /**
+   * 只读快照。给纯查询消费者用，语义化命名。
+   */
+  snapshot(): Readonly<T> {
+    return this.getState()
   }
 
-  private flush(): void {
+  /**
+   * 变更 state 并串行落盘。返回值 await 后即代表已写入磁盘。
+   */
+  async setState(updater: (state: T) => void): Promise<void> {
+    if (!this.loaded) throw new Error('Store not loaded.')
+    updater(this.state)
+    await this.flush()
+  }
+
+  private async flush(): Promise<void> {
     this.writeQueue = this.writeQueue.then(async () => {
-      const content = JSON.stringify(this.state, null, 2)
-      await writeFile(this.backupFilePath, content, 'utf8')
-      await writeFile(this.filePath, content, 'utf8')
+      const serialized = JSON.stringify(this.state, null, 2)
+      await mkdir(dirname(this.filePath), { recursive: true })
+
+      // 先把当前 primary（如果存在且合法）复制成 backup
+      try {
+        const current = await readFile(this.filePath, 'utf8')
+        JSON.parse(current)
+        await writeFile(this.backupFilePath, current, 'utf8')
+      } catch {
+        // primary 不存在或损坏，保留上一份 backup 即可
+      }
+
+      // 原子写：先写 .tmp 再 rename 覆盖 primary
+      await writeFile(this.tempFilePath, serialized, 'utf8')
+      await rename(this.tempFilePath, this.filePath)
     })
+    await this.writeQueue
   }
 }

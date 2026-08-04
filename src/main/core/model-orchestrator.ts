@@ -6,10 +6,12 @@ import type {
   TaskEventType,
   TaskRun,
   Workspace
-} from '../../shared/contracts'
+} from '../../shared/types'
 import { completeWithTools, type ModelMessage, type ModelTool } from '../model-client'
-import { SessionStore } from '../storage'
 import { CapabilityRegistry } from './capability-registry'
+import type { ModelService } from '../domains/model/ModelService'
+import type { TaskRepository } from '../domains/task/TaskRepository'
+import type { SkillService } from '../domains/skill/SkillService'
 
 const MAX_CAPABILITY_CALLS = 32
 const MAX_HISTORY_EVENTS = 16
@@ -42,8 +44,10 @@ export type TaskEventEmitter = (
 
 export class ModelOrchestrator {
   constructor(
-    private readonly store: SessionStore,
-    private readonly capabilities: CapabilityRegistry
+    private readonly capabilities: CapabilityRegistry,
+    private readonly modelService: ModelService,
+    private readonly taskRepository: TaskRepository,
+    private readonly skillService: SkillService
   ) {}
 
   async run(
@@ -54,10 +58,8 @@ export class ModelOrchestrator {
     emit: TaskEventEmitter,
     instruction = task.objective
   ): Promise<string> {
-    const profile = (await this.store.listModelProfiles()).find(
-      (item) => item.id === task.modelProfileId && item.enabled
-    )
-    if (!profile) throw new Error('任务使用的模型配置不存在或已停用')
+    const profile = await this.modelService.getModelProfile(task.modelProfileId)
+    if (!profile || !profile.enabled) throw new Error('任务使用的模型配置不存在或已停用')
 
     const registered = (await this.capabilities.list()).filter(
       (item) =>
@@ -80,8 +82,8 @@ export class ModelOrchestrator {
         parameters: capability.inputSchema
       }
     }))
-    const details = await this.store.getTask(task.id)
-    const enabledSkills = await this.store.listEnabledSkillInstructions()
+    const details = await this.taskRepository.findById(task.id)
+    const enabledSkills = await this.skillService.listEnabledInstructions()
     const historyContext = buildHistoryContext(
       details?.events.filter((event) => event.runId !== run.id) ?? []
     )

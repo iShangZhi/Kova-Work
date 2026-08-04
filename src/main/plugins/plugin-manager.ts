@@ -5,12 +5,12 @@ import type {
   PluginDefinition,
   PluginScanResult,
   RegisteredCapability
-} from '../../shared/contracts'
+} from '../../shared/types'
 import type { AgentAdapter } from '../agents/types'
 import { builtInPlugins } from './builtin'
 import { detectPluginCli } from './detection'
 import type { RegisteredPlugin, ScannedPlugin } from './types'
-import { SessionStore } from '../storage'
+import type { PluginService } from '../domains/plugin/PluginService'
 import { logger } from '../infrastructure/logging/Logger'
 
 export class PluginManager {
@@ -18,7 +18,7 @@ export class PluginManager {
   private scannedAt = ''
 
   constructor(
-    private readonly store: SessionStore,
+    private readonly pluginService: PluginService,
     private readonly registered: RegisteredPlugin[] = builtInPlugins
   ) {}
 
@@ -28,7 +28,7 @@ export class PluginManager {
     const results = await Promise.all(
       this.registered.map(async ({ manifest, runtime }): Promise<ScannedPlugin> => {
         const detected = await detectPluginCli(manifest)
-        const enabled = await this.store.isPluginEnabled(manifest.id)
+        const enabled = await this.pluginService.isEnabled(manifest.id)
         let status: PluginDefinition['status']
         let statusMessage: string
 
@@ -115,7 +115,7 @@ export class PluginManager {
     if (!this.registered.some((plugin) => plugin.manifest.id === pluginId)) {
       throw new Error('找不到对应插件')
     }
-    await this.store.setPluginEnabled(pluginId, enabled)
+    await this.pluginService.setEnabled(pluginId, enabled)
     return this.scan(true)
   }
 

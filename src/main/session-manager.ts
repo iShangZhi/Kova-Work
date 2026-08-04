@@ -7,11 +7,12 @@ import type {
   ContinueSessionInput,
   RenameSessionInput,
   StartSessionInput
-} from '../shared/contracts'
+} from '../shared/types'
 import type { RunningSession } from './agents/types'
 import { PluginManager } from './plugins/plugin-manager'
-import { SessionStore } from './storage'
 import { completeWithModel } from './model-client'
+import type { ModelService } from './domains/model/ModelService'
+import type { SessionService } from './domains/session/SessionService'
 
 export class SessionManager {
   private running = new Map<string, RunningSession>()
@@ -19,8 +20,9 @@ export class SessionManager {
   private deleted = new Set<string>()
 
   constructor(
-    private readonly store: SessionStore,
+    private readonly sessionService: SessionService,
     private readonly plugins: PluginManager,
+    private readonly modelService: ModelService,
     private readonly getWindow: () => BrowserWindow | null
   ) {}
 
@@ -48,14 +50,14 @@ export class SessionManager {
       updatedAt: now
     }
 
-    await this.store.saveSession(session)
+    await this.sessionService.save(session)
     await this.emit(session, 'user_message', input.prompt)
     void this.run(session, input.prompt)
     return session
   }
 
   async continue(input: ContinueSessionInput): Promise<void> {
-    const stored = await this.store.getSession(input.sessionId)
+    const stored = await this.sessionService.getById(input.sessionId)
     if (!stored) throw new Error('找不到对应会话')
     if (this.running.has(input.sessionId)) {
       const queue = this.queuedPrompts.get(input.sessionId) ?? []
@@ -70,7 +72,7 @@ export class SessionManager {
     }
 
     const session = { ...stored.session, status: 'running' as const, updatedAt: new Date().toISOString() }
-    await this.store.saveSession(session)
+    await this.sessionService.save(session)
     await this.emit(session, 'user_message', input.prompt)
     void this.run(session, input.prompt)
   }
@@ -82,24 +84,14 @@ export class SessionManager {
     this.queuedPrompts.delete(sessionId)
     running.session.status = 'cancelled'
     running.session.updatedAt = new Date().toISOString()
-    await this.store.saveSession(running.session)
+    await this.sessionService.save(running.session)
     await this.emit(running.session, 'system', '运行已由用户终止')
   }
 
   async rename(input: RenameSessionInput): Promise<AgentSession> {
-    const stored = await this.store.getSession(input.sessionId)
-    if (!stored) throw new Error('找不到对应会话')
-    const title = input.title.trim()
-    if (!title) throw new Error('任务名称不能为空')
-
-    const session = {
-      ...stored.session,
-      title: title.slice(0, 80),
-      updatedAt: new Date().toISOString()
-    }
+    const session = await this.sessionService.rename(input)
     const running = this.running.get(input.sessionId)
     if (running) running.session.title = session.title
-    await this.store.saveSession(session)
     return session
   }
 
@@ -111,7 +103,7 @@ export class SessionManager {
       this.running.delete(sessionId)
     }
     this.queuedPrompts.delete(sessionId)
-    await this.store.deleteSession(sessionId)
+    await this.sessionService.delete(sessionId)
     if (!running) this.deleted.delete(sessionId)
   }
 
@@ -123,9 +115,9 @@ export class SessionManager {
       let nextPrompt: string | undefined = prompt
       while (nextPrompt && !controller.signal.aborted) {
         if (session.agentId === 'model') {
-          const model = (await this.store.listModelProfiles()).find((item) => item.id === session.modelProfileId)
+          const model = await this.modelService.getModelProfile(session.modelProfileId!)
           if (!model) throw new Error('会话使用的模型配置已不存在')
-          const stored = await this.store.getSession(session.id)
+          const stored = await this.sessionService.getById(session.id)
           const history = (stored?.events ?? [])
             .filter((event) => event.type === 'user_message' || event.type === 'agent_message')
             .slice(-30)
@@ -151,7 +143,7 @@ export class SessionManager {
             setNativeSessionId: async (nativeSessionId) => {
               session.nativeSessionId = nativeSessionId
               session.updatedAt = new Date().toISOString()
-              await this.store.saveSession(session)
+              await this.sessionService.save(session)
             }
           })
         }
@@ -173,7 +165,7 @@ export class SessionManager {
     } finally {
       if (!this.deleted.has(session.id)) {
         session.updatedAt = new Date().toISOString()
-        await this.store.saveSession(session)
+        await this.sessionService.save(session)
       } else {
         this.deleted.delete(session.id)
       }
@@ -197,7 +189,7 @@ export class SessionManager {
       createdAt: new Date().toISOString(),
       metadata
     }
-    await this.store.appendEvent(event)
+    await this.sessionService.appendEvent(event)
     this.getWindow()?.webContents.send('agent:event', event)
   }
 }

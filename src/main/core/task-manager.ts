@@ -8,11 +8,12 @@ import type {
   TaskEventType,
   TaskRun,
   Workspace
-} from '../../shared/contracts'
-import { SessionStore } from '../storage'
+} from '../../shared/types'
 import { ModelOrchestrator } from './model-orchestrator'
 import { CORE_TOOLS_PLUGIN_ID } from '../tools/native-tool-registry'
 import { logger } from '../infrastructure/logging/Logger'
+import type { TaskService } from '../domains/task/TaskService'
+import type { TaskRepository } from '../domains/task/TaskRepository'
 
 interface RunningTask {
   task: Task
@@ -21,154 +22,93 @@ interface RunningTask {
   controller: AbortController
 }
 
+/**
+ * TaskManager - 任务管理器（基础设施层）
+ *
+ * 职责：
+ * - 管理运行中任务的生命周期（运行状态、AbortController）
+ * - 协调 TaskService 和 ModelOrchestrator
+ * - 事件发射到前端
+ * - 任务执行编排
+ *
+ * 注意：业务逻辑已移至 TaskService，TaskManager 仅负责运行时管理
+ */
 export class TaskManager {
   private readonly running = new Map<string, RunningTask>()
 
   constructor(
-    private readonly store: SessionStore,
+    private readonly taskService: TaskService,
+    private readonly taskRepository: TaskRepository,
     private readonly orchestrator: ModelOrchestrator,
     private readonly getWindow: () => BrowserWindow | null
   ) {}
 
   async start(input: StartTaskInput): Promise<Task> {
-    const objective = input.objective.trim()
-    if (!objective) throw new Error('任务目标不能为空')
-    const model = (await this.store.listModelProfiles()).find(
-      (item) => item.id === input.modelProfileId && item.enabled
-    )
-    if (!model) throw new Error('请选择有效的模型配置')
+    // 委托给 TaskService 创建任务
+    const { task, run, workspace } = await this.taskService.createTask(input, CORE_TOOLS_PLUGIN_ID)
 
-    const workspace = await this.store.ensureWorkspace(input.workspace, input.modelProfileId)
-    const now = new Date().toISOString()
-    const task: Task = {
-      id: randomUUID(),
-      title: objective.slice(0, 80),
-      objective,
-      workspaceId: workspace.id,
-      modelProfileId: input.modelProfileId,
-      allowedPluginIds: [
-        ...new Set([
-          CORE_TOOLS_PLUGIN_ID,
-          ...(input.allowedPluginIds ?? workspace.enabledPluginIds)
-        ])
-      ],
-      permissionMode: input.permissionMode,
-      status: 'running',
-      createdAt: now,
-      updatedAt: now
-    }
-    const run: TaskRun = {
-      id: randomUUID(),
-      taskId: task.id,
-      sequence: 1,
-      trigger: 'user',
-      status: 'running',
-      startedAt: now
-    }
+    // 发射初始事件
+    await this.emit(task, run, 'user_message', input.objective)
 
-    await this.store.saveTask(task)
-    await this.store.saveTaskRun(run)
-    await this.emit(task, run, 'user_message', objective)
+    // 创建控制器并开始执行
     const controller = new AbortController()
     this.running.set(task.id, { task, run, workspace, controller })
 
-    logger.info('Task started', {
-      taskId: task.id,
-      workspaceId: workspace.id,
-      modelProfileId: input.modelProfileId,
-      objective: objective.slice(0, 100)
-    })
-
-    void this.execute(task, run, workspace, controller, objective)
+    void this.execute(task, run, workspace, controller, input.objective)
     return task
   }
 
   async continue(input: ContinueTaskInput): Promise<Task> {
-    const prompt = input.prompt.trim()
-    if (!prompt) throw new Error('追加指令不能为空')
-    return this.startNextRun(input.taskId, 'resume', prompt, 'user_message')
+    // 委托给 TaskService 继续任务
+    const { task, run, workspace } = await this.taskService.continueTask(input)
+
+    // 发射事件
+    await this.emit(task, run, 'user_message', input.prompt, { trigger: 'resume' })
+
+    // 创建控制器并开始执行
+    const controller = new AbortController()
+    this.running.set(task.id, { task, run, workspace, controller })
+
+    void this.execute(task, run, workspace, controller, input.prompt)
+    return task
   }
 
   async retry(taskId: string): Promise<Task> {
-    const details = await this.store.getTask(taskId)
-    if (!details) throw new Error('找不到对应任务')
-    if (details.task.status !== 'failed' && details.task.status !== 'cancelled') {
-      throw new Error('只有失败或已终止的任务可以重试')
-    }
-    return this.startNextRun(
-      taskId,
-      'retry',
-      '重新执行上一轮未完成的任务。请结合历史错误调整方案，并再次完成原始目标。',
-      'system'
-    )
+    // 委托给 TaskService 重试任务
+    const instruction = '重新执行上一轮未完成的任务。请结合历史错误调整方案，并再次完成原始目标。'
+    const { task, run, workspace } = await this.taskService.retryTask(taskId)
+
+    // 发射事件
+    await this.emit(task, run, 'system', instruction, { trigger: 'retry' })
+
+    // 创建控制器并开始执行
+    const controller = new AbortController()
+    this.running.set(task.id, { task, run, workspace, controller })
+
+    void this.execute(task, run, workspace, controller, instruction)
+    return task
   }
 
   async cancel(taskId: string): Promise<void> {
     const current = this.running.get(taskId)
     if (!current) return
-    current.controller.abort()
-    const now = new Date().toISOString()
-    current.task.status = 'cancelled'
-    current.task.updatedAt = now
-    current.run.status = 'cancelled'
-    current.run.completedAt = now
-    await this.store.saveTask(current.task)
-    await this.store.saveTaskRun(current.run)
-    await this.emit(current.task, current.run, 'system', '任务已由用户停止')
 
-    logger.info('Task cancelled', { taskId })
+    // 中止执行
+    current.controller.abort()
+
+    // 委托给 TaskService 更新状态
+    const { task, run } = await this.taskService.cancelTask(taskId)
+
+    // 发射事件
+    await this.emit(task, run, 'system', '任务已由用户停止')
+
+    // 清理运行状态
+    this.running.delete(taskId)
   }
 
   async delete(taskId: string): Promise<void> {
-    if (this.running.has(taskId)) throw new Error('请先停止正在运行的任务')
-    const details = await this.store.getTask(taskId)
-    if (!details) return
-    await this.store.deleteTask(taskId)
-  }
-
-  private async startNextRun(
-    taskId: string,
-    trigger: TaskRun['trigger'],
-    instruction: string,
-    eventType: TaskEventType
-  ): Promise<Task> {
-    if (this.running.has(taskId)) throw new Error('任务当前正在运行')
-    const details = await this.store.getTask(taskId)
-    if (!details) throw new Error('找不到对应任务')
-    if (!details.workspace) throw new Error('任务工作区不存在')
-
-    const now = new Date().toISOString()
-    const task = details.task
-    const previousModelProfileId = task.modelProfileId
-    const models = (await this.store.listModelProfiles()).filter((model) => model.enabled)
-    if (!models.some((model) => model.id === task.modelProfileId)) {
-      const fallback = models.find((model) => model.id === details.workspace?.defaultModelProfileId) ?? models[0]
-      if (!fallback) throw new Error('没有可用的模型配置，请先在设置中添加并启用模型')
-      task.modelProfileId = fallback.id
-      details.workspace = await this.store.ensureWorkspace(details.workspace.path, fallback.id)
-    }
-    task.status = 'running'
-    task.updatedAt = now
-    task.completedAt = undefined
-    const run: TaskRun = {
-      id: randomUUID(),
-      taskId,
-      sequence: Math.max(0, ...details.runs.map((item) => item.sequence)) + 1,
-      trigger,
-      status: 'running',
-      startedAt: now
-    }
-
-    await this.store.saveTask(task)
-    await this.store.saveTaskRun(run)
-    if (previousModelProfileId !== task.modelProfileId) {
-      await this.emit(task, run, 'system', '原模型配置已不可用，任务已自动切换到当前默认模型。')
-    }
-    await this.emit(task, run, eventType, instruction, { trigger })
-    const controller = new AbortController()
-    this.running.set(task.id, { task, run, workspace: details.workspace, controller })
-    void this.execute(task, run, details.workspace, controller, instruction)
-    return task
+    // 委托给 TaskService 删除任务
+    await this.taskService.deleteTask(taskId)
   }
 
   private async execute(
@@ -190,31 +130,33 @@ export class TaskManager {
         instruction
       )
       if (controller.signal.aborted) return
-      const now = new Date().toISOString()
-      task.status = 'completed'
-      task.updatedAt = now
-      task.completedAt = now
-      run.status = 'completed'
-      run.completedAt = now
-      await this.emit(task, run, 'completed', result)
+
+      // 委托给 TaskService 标记完成
+      const { task: updatedTask, run: updatedRun } = await this.taskService.completeTask(
+        task.id,
+        run.id,
+        result
+      )
+
+      await this.emit(updatedTask, updatedRun, 'completed', result)
 
       const duration = Date.now() - startTime
       logger.info('Task completed', { taskId: task.id, runId: run.id, duration })
     } catch (error) {
       if (controller.signal.aborted) return
-      const now = new Date().toISOString()
-      task.status = 'failed'
-      task.updatedAt = now
-      run.status = 'failed'
-      run.completedAt = now
-      run.error = error instanceof Error ? error.message : String(error)
-      await this.emit(task, run, 'error', run.error)
+
+      // 委托给 TaskService 标记失败
+      const { task: updatedTask, run: updatedRun } = await this.taskService.failTask(
+        task.id,
+        run.id,
+        error as Error
+      )
+
+      await this.emit(updatedTask, updatedRun, 'error', updatedRun.error!)
 
       const duration = Date.now() - startTime
       logger.error('Task failed', error as Error, { taskId: task.id, runId: run.id, duration })
     } finally {
-      await this.store.saveTask(task)
-      await this.store.saveTaskRun(run)
       this.running.delete(task.id)
     }
   }
@@ -235,7 +177,7 @@ export class TaskManager {
       createdAt: new Date().toISOString(),
       metadata
     }
-    await this.store.appendTaskEvent(event)
+    await this.taskRepository.appendEvent(event)
     this.getWindow()?.webContents.send('task:event', event)
   }
 }
